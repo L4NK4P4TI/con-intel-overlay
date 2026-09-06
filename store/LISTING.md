@@ -6,7 +6,7 @@ This extension is **unofficial** and must stay that way in the listing. Do not u
 
 ## Item ID / package
 
-Upload `dist/con-intel-overlay-0.1.12.zip` after running `.\store\pack.ps1`.
+Upload `dist/con-intel-overlay-1.0.1.zip` after running `.\store\pack.ps1`.
 
 ## Product name (max 45 characters)
 

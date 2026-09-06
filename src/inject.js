@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "0.1.22";
+  const VERSION = "1.0.1";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const WRAP_MARGIN = 240;
@@ -137,50 +137,13 @@
     return Math.hypot(wrapDeltaX(a.x, b.x, wrap), b.y - a.y);
   }
 
-  let kmScaleCache = null;
-
-  function readPositiveNumber(value) {
-    const n = Number(value);
-    return Number.isFinite(n) && n > 0 && n < 1e8 ? n : null;
-  }
-
-  function kmPerMapUnit() {
-    if (kmScaleCache != null) return kmScaleCache;
-    const game = hup();
-    const widget = game?.ui?.mapWidget;
-    const viewport = widget?.viewport;
-    const renderer = widget?.mapRenderer;
-    const names = ["kmPerUnit", "kilometersPerUnit", "kmPerMapUnit"];
-    const objects = [viewport, renderer, widget, game, game?.config];
-    for (const obj of objects) {
-      if (!obj) continue;
-      for (const name of names) {
-        try {
-          const raw = obj[name];
-          const n = readPositiveNumber(typeof raw === "function" ? raw() : raw);
-          if (n) {
-            kmScaleCache = n;
-            LOG("km scale from game", name, n);
-            return kmScaleCache;
-          }
-        } catch (_err) {
-          /* next */
-        }
-      }
-    }
-    const wrap = getMapApi()?.wrapWidth() || mapExtent().width || 0;
-    kmScaleCache = wrap > 0 ? 40075.017 / wrap : 1;
-    LOG("km scale from wrap", { wrap, height: mapExtent().height, kmPerUnit: kmScaleCache });
-    return kmScaleCache;
-  }
-
   function mapRadiusKm(radius) {
-    return Math.max(0, Number(radius) || 0) * kmPerMapUnit();
+    return Math.max(0, Number(radius) || 0);
   }
 
   function mapDistanceKm(a, b) {
     if (!a || !b) return 0;
-    return mapSeparation(a, b) * kmPerMapUnit();
+    return mapSeparation(a, b);
   }
 
   function formatKm(km) {
