@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "0.1.20";
+  const VERSION = "0.1.22";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const WRAP_MARGIN = 240;
@@ -19,6 +19,7 @@
     marker: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M8 2.5v7"/><circle cx="8" cy="12.2" r="2.1" fill="currentColor" stroke="none"/></svg>`,
     text: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.5 3.5h9"/><path d="M8 3.5v9"/><path d="M5.5 12.5h5"/></svg>`,
     range: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><circle cx="8" cy="8" r="5.5"/><path d="M8 8h5.5"/><circle cx="8" cy="8" r="1.5" fill="currentColor" stroke="none"/></svg>`,
+    measure: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 13.5 13.5 2.5"/><path d="M4.2 11.8 5.1 12.7M6.2 9.8 7.4 11M8.2 7.8 9.7 9.3M10.2 5.8 12 7.6"/></svg>`,
     eraser: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10.2 8.8 5.4a1.6 1.6 0 0 1 2.3 0L13 7.3 8.2 12.1H5.5z"/><path d="M7 12.1h6"/></svg>`,
     eye: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M1.8 8s2.4-4.2 6.2-4.2S14.2 8 14.2 8s-2.4 4.2-6.2 4.2S1.8 8 1.8 8z"/><circle cx="8" cy="8" r="1.6"/></svg>`,
     eyeOff: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="m3 3 10 10"/><path d="M6.4 6.5A2 2 0 0 0 9.5 9.6"/><path d="M1.8 8s2.4-4.2 6.2-4.2c.7 0 1.4.1 2 .4M14.2 8s-1 1.8-2.6 2.9M4.3 4.9C2.8 5.8 1.8 8 1.8 8"/></svg>`,
@@ -52,6 +53,7 @@
     erasing: false,
     rangeKind: "reach",
     rangeEdit: null,
+    measureEdit: null,
     panelLeft: 12,
     panelTop: null,
     expandedLeft: 12,
@@ -111,6 +113,80 @@
     const raw = hup()?.config?.userData?.gameID ?? hup()?.getGameID?.();
     const id = Number(raw);
     return id > 0 ? String(id) : null;
+  }
+
+  function mapExtent() {
+    const game = hup();
+    const widget = game?.ui?.mapWidget;
+    const viewport = widget?.viewport;
+    const renderer = widget?.mapRenderer;
+    const width = Number(viewport?.totalWidth || renderer?.mapSize?.width || 0);
+    const height = Number(viewport?.totalHeight || renderer?.mapSize?.height || 0);
+    return { width, height };
+  }
+
+  function wrapDeltaX(fromX, toX, width) {
+    if (!width) return toX - fromX;
+    let dx = toX - fromX;
+    dx -= Math.round(dx / width) * width;
+    return dx;
+  }
+
+  function mapSeparation(a, b) {
+    const wrap = getMapApi()?.wrapWidth() || mapExtent().width || 0;
+    return Math.hypot(wrapDeltaX(a.x, b.x, wrap), b.y - a.y);
+  }
+
+  let kmScaleCache = null;
+
+  function readPositiveNumber(value) {
+    const n = Number(value);
+    return Number.isFinite(n) && n > 0 && n < 1e8 ? n : null;
+  }
+
+  function kmPerMapUnit() {
+    if (kmScaleCache != null) return kmScaleCache;
+    const game = hup();
+    const widget = game?.ui?.mapWidget;
+    const viewport = widget?.viewport;
+    const renderer = widget?.mapRenderer;
+    const names = ["kmPerUnit", "kilometersPerUnit", "kmPerMapUnit"];
+    const objects = [viewport, renderer, widget, game, game?.config];
+    for (const obj of objects) {
+      if (!obj) continue;
+      for (const name of names) {
+        try {
+          const raw = obj[name];
+          const n = readPositiveNumber(typeof raw === "function" ? raw() : raw);
+          if (n) {
+            kmScaleCache = n;
+            LOG("km scale from game", name, n);
+            return kmScaleCache;
+          }
+        } catch (_err) {
+          /* next */
+        }
+      }
+    }
+    const wrap = getMapApi()?.wrapWidth() || mapExtent().width || 0;
+    kmScaleCache = wrap > 0 ? 40075.017 / wrap : 1;
+    LOG("km scale from wrap", { wrap, height: mapExtent().height, kmPerUnit: kmScaleCache });
+    return kmScaleCache;
+  }
+
+  function mapRadiusKm(radius) {
+    return Math.max(0, Number(radius) || 0) * kmPerMapUnit();
+  }
+
+  function mapDistanceKm(a, b) {
+    if (!a || !b) return 0;
+    return mapSeparation(a, b) * kmPerMapUnit();
+  }
+
+  function formatKm(km) {
+    if (!Number.isFinite(km) || km < 0) return "—";
+    if (km < 10) return `${km.toFixed(1)} km`;
+    return `${Math.round(km).toLocaleString("en-US")} km`;
   }
 
   function showBoot(message) {
@@ -294,7 +370,7 @@
 
   function sanitizeStrokes(raw) {
     if (!Array.isArray(raw)) return [];
-    const types = new Set(["pen", "arrow", "marker", "text", "range"]);
+    const types = new Set(["pen", "arrow", "marker", "text", "range", "measure"]);
     const out = [];
     for (const item of raw) {
       if (!item || typeof item !== "object") continue;
@@ -348,6 +424,10 @@
         stroke.combatRadius = combatRadius;
         stroke.radarRadius = radarRadius;
         stroke.sightRadius = sightRadius;
+      }
+      if (item.type === "measure") {
+        if (points.length < 2) continue;
+        stroke.points = points.slice(0, 2);
       }
       out.push(stroke);
       if (out.length >= 4000) break;
@@ -709,6 +789,13 @@
         ctx.arc(copy.probe.x, copy.probe.y, 4 + stroke.width * 0.6, 0, Math.PI * 2);
         ctx.fill();
         paintOutlinedLabel(ctx, "C", copy.origin.x + 7, copy.origin.y - 6, color);
+        paintOutlinedLabel(
+          ctx,
+          formatKm(mapRadiusKm(layout.combatRadius)),
+          copy.origin.x + 7,
+          copy.origin.y + 12,
+          color
+        );
       }
       ctx.beginPath();
       ctx.arc(copy.radarHandle.x, copy.radarHandle.y, 3.5 + stroke.width * 0.4, 0, Math.PI * 2);
@@ -716,8 +803,20 @@
       ctx.beginPath();
       ctx.arc(copy.sightHandle.x, copy.sightHandle.y, 3 + stroke.width * 0.35, 0, Math.PI * 2);
       ctx.fill();
-      paintOutlinedLabel(ctx, "R", copy.radarHandle.x + 6, copy.radarHandle.y - 4, color);
-      paintOutlinedLabel(ctx, "S", copy.sightHandle.x + 6, copy.sightHandle.y - 4, color);
+      paintOutlinedLabel(
+        ctx,
+        `R ${formatKm(mapRadiusKm(layout.radarRadius))}`,
+        copy.radarHandle.x + 6,
+        copy.radarHandle.y - 4,
+        color
+      );
+      paintOutlinedLabel(
+        ctx,
+        `S ${formatKm(mapRadiusKm(layout.sightRadius))}`,
+        copy.sightHandle.x + 6,
+        copy.sightHandle.y - 4,
+        color
+      );
 
       if (showHandles) {
         ctx.save();
@@ -803,6 +902,75 @@
     return null;
   }
 
+  function paintMeasure(ctx, stroke, canvas) {
+    const a = stroke.points[0];
+    const b = stroke.points[1] || a;
+    if (!a) return;
+    const label = formatKm(mapDistanceKm(a, b));
+    const showHandles = state.tool === "measure";
+    for (const path of strokeScreenPath({ points: [a, b] }, canvas)) {
+      if (path.length < 2) continue;
+      ctx.save();
+      ctx.setLineDash([7, 5]);
+      ctx.beginPath();
+      ctx.moveTo(path[0].x, path[0].y);
+      ctx.lineTo(path[1].x, path[1].y);
+      ctx.stroke();
+      ctx.restore();
+      ctx.beginPath();
+      ctx.arc(path[0].x, path[0].y, 4 + stroke.width, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(path[1].x, path[1].y, 4 + stroke.width, 0, Math.PI * 2);
+      ctx.fill();
+      const mid = { x: (path[0].x + path[1].x) / 2, y: (path[0].y + path[1].y) / 2 };
+      paintOutlinedLabel(ctx, label, mid.x + 8, mid.y - 6, stroke.color);
+      if (showHandles) {
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 224, 130, 0.95)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(path[0].x, path[0].y, 9 + stroke.width, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(path[1].x, path[1].y, 9 + stroke.width, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+  }
+
+  function measureHitKind(stroke, screen, canvas) {
+    const pad = Math.max(12, (stroke.width || 3) + 8);
+    let best = null;
+    let bestDist = Infinity;
+    const consider = (mode, dist, hitPad) => {
+      if (dist <= hitPad && dist < bestDist) {
+        best = mode;
+        bestDist = dist;
+      }
+    };
+    for (const path of strokeScreenPath({ points: stroke.points.slice(0, 2) }, canvas)) {
+      if (path.length < 2) continue;
+      consider("a", Math.hypot(path[0].x - screen.x, path[0].y - screen.y), pad + 4);
+      consider("b", Math.hypot(path[1].x - screen.x, path[1].y - screen.y), pad + 4);
+      consider("move", distToSegment(screen, path[0], path[1]), pad);
+    }
+    return best;
+  }
+
+  function findMeasureHandle(screen, canvas) {
+    if (!screen || !canvas) return null;
+    for (let i = state.strokes.length - 1; i >= 0; i -= 1) {
+      const stroke = state.strokes[i];
+      if (stroke.type !== "measure") continue;
+      const mode = measureHitKind(stroke, screen, canvas);
+      if (mode) return { index: i, id: stroke.id, mode };
+    }
+    return null;
+  }
+
   function paintStroke(ctx, stroke, canvas) {
     ctx.save();
     ctx.strokeStyle = stroke.color;
@@ -813,6 +981,12 @@
 
     if (stroke.type === "range") {
       paintRange(ctx, stroke, canvas);
+      ctx.restore();
+      return;
+    }
+
+    if (stroke.type === "measure") {
+      paintMeasure(ctx, stroke, canvas);
       ctx.restore();
       return;
     }
@@ -916,6 +1090,9 @@
     if (stroke.type === "range") {
       return rangeHitsEraser(stroke, screen, canvas);
     }
+    if (stroke.type === "measure") {
+      return measureHitKind(stroke, screen, canvas) != null;
+    }
     if (stroke.type === "marker") {
       const radius = markerRadius(stroke);
       const stem = markerStem(stroke);
@@ -974,13 +1151,17 @@
       syncTextEditor();
       return;
     }
-    if (state.rangeEdit) {
+    if (state.measureEdit) {
+      state.hoverStrokeId = state.measureEdit.id;
+    } else if (state.rangeEdit) {
       state.hoverStrokeId = state.rangeEdit.id;
     } else if (state.tool === "eraser" && state.pointerScreen) {
       const idx = findStrokeIndexAt(state.pointerScreen, overlay);
       state.hoverStrokeId = idx >= 0 ? state.strokes[idx].id : null;
     } else if (state.tool === "range" && state.pointerScreen && !state.draft) {
       state.hoverStrokeId = findRangeHandle(state.pointerScreen, overlay)?.id || null;
+    } else if (state.tool === "measure" && state.pointerScreen && !state.draft) {
+      state.hoverStrokeId = findMeasureHandle(state.pointerScreen, overlay)?.id || null;
     } else if (state.tool !== "eraser") {
       state.hoverStrokeId = null;
     }
@@ -1032,6 +1213,9 @@
       state.draft.sightRadius = 0;
       state.draft.points = [mapPos];
     }
+    if (state.tool === "measure") {
+      state.draft.points = [mapPos, { x: mapPos.x, y: mapPos.y }];
+    }
   }
 
   function finishDraft() {
@@ -1052,6 +1236,16 @@
         return;
       }
       state.draft.points = [layout.origin];
+    }
+    if (state.draft.type === "measure") {
+      const origin = fromMap(state.draft.points[0]);
+      const tip = fromMap(state.draft.points[1] || state.draft.points[0]);
+      if (Math.hypot(tip.x - origin.x, tip.y - origin.y) < 12) {
+        state.draft = null;
+        updateStatus();
+        return;
+      }
+      state.draft.points = [state.draft.points[0], state.draft.points[1]];
     }
     if (state.draft.points.length) state.strokes.push(state.draft);
     state.draft = null;
@@ -1299,6 +1493,20 @@
         const overRange = findStrokeIndexAt(eventToScreen(event, surface), surface);
         if (overRange >= 0 && state.strokes[overRange].type === "range") return;
       }
+      if (state.tool === "measure") {
+        const handle = findMeasureHandle(eventToScreen(event, surface), surface);
+        if (handle) {
+          const stroke = state.strokes[handle.index];
+          state.measureEdit = {
+            id: stroke.id,
+            mode: handle.mode,
+            grab: mapPos,
+            start: stroke.points.slice(0, 2).map((p) => ({ x: p.x, y: p.y })),
+          };
+          state.hoverStrokeId = stroke.id;
+          return;
+        }
+      }
       startDraft(mapPos);
     };
 
@@ -1331,6 +1539,22 @@
         scheduleSave();
         return;
       }
+      if (state.measureEdit) {
+        eat(event);
+        if (!surface) return;
+        const stroke = state.strokes.find((item) => item.id === state.measureEdit.id);
+        if (!stroke) return;
+        const mapPos = toMap(eventToScreen(event, surface));
+        if (state.measureEdit.mode === "a") stroke.points[0] = mapPos;
+        else if (state.measureEdit.mode === "b") stroke.points[1] = mapPos;
+        else {
+          const dx = mapPos.x - state.measureEdit.grab.x;
+          const dy = mapPos.y - state.measureEdit.grab.y;
+          stroke.points = state.measureEdit.start.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        }
+        scheduleSave();
+        return;
+      }
       if (!state.draft || state.draft.type === "text") return;
       eat(event);
       if (!surface) return;
@@ -1340,7 +1564,7 @@
         else applyReachFromDrag(state.draft, mapPos);
         return;
       }
-      if (state.tool === "arrow") {
+      if (state.tool === "arrow" || state.draft.type === "measure") {
         state.draft.points = [state.draft.points[0], mapPos];
         return;
       }
@@ -1355,6 +1579,12 @@
       }
       if (state.rangeEdit) {
         state.rangeEdit = null;
+        eat(event);
+        scheduleSave();
+        return;
+      }
+      if (state.measureEdit) {
+        state.measureEdit = null;
         eat(event);
         scheduleSave();
         return;
@@ -1389,7 +1619,7 @@
 
   function setTool(tool) {
     state.tool = tool;
-    for (const id of ["pen", "arrow", "marker", "text", "range", "eraser"]) {
+    for (const id of ["pen", "arrow", "marker", "text", "range", "measure", "eraser"]) {
       ui(`#con-intel-${id}`)?.classList.toggle("active", tool === id);
     }
     const note = ui("#con-intel-note-wrap");
@@ -1453,7 +1683,9 @@
     const action =
       state.tool === "eraser"
         ? "Hold Alt + click a mark"
-        : state.tool === "range"
+        : state.tool === "measure"
+          ? "Alt-drag to measure km · drag ends to adjust"
+          : state.tool === "range"
           ? state.rangeKind === "sensors"
             ? "Alt-drag radar size · origin moves · R/S dots resize"
             : "Alt-drag combat size (locks) · origin moves · hub slides · R/S dots resize"
@@ -1863,10 +2095,11 @@
           <button id="con-intel-marker" class="tool" type="button" title="Marker (Alt+3)">${ICO.marker} Marker</button>
           <button id="con-intel-text" class="tool" type="button" title="Text (Alt+4)">${ICO.text} Text</button>
           <button id="con-intel-range" class="tool" type="button" title="Range (Alt+5)">${ICO.range} Range</button>
+          <button id="con-intel-measure" class="tool" type="button" title="Measure km (Alt+6)">${ICO.measure} Measure</button>
           <span class="split"></span>
-          <button id="con-intel-eraser" class="tool eraser" type="button" title="Eraser (Alt+6)">${ICO.eraser} Eraser</button>
+          <button id="con-intel-eraser" class="tool eraser" type="button" title="Eraser (Alt+7)">${ICO.eraser} Eraser</button>
         </div>
-        <div class="kbd">Alt+1–6 tools · hold Alt and click the map to draw</div>
+        <div class="kbd">Alt+1–7 tools · hold Alt and click the map to draw</div>
         <div id="con-intel-range-wrap" class="range-opts" hidden>
           <button id="con-intel-kind-reach" class="tool active" type="button" title="Combat range plus radar and sight on the perimeter">Reach</button>
           <button id="con-intel-kind-sensors" class="tool" type="button" title="Radar and sight from a unit, no combat ring">Radar+Sight</button>
@@ -1925,6 +2158,7 @@
     ui("#con-intel-marker").onclick = () => setTool("marker");
     ui("#con-intel-text").onclick = () => setTool("text");
     ui("#con-intel-range").onclick = () => setTool("range");
+    ui("#con-intel-measure").onclick = () => setTool("measure");
     ui("#con-intel-kind-reach").onclick = () => setRangeKind("reach");
     ui("#con-intel-kind-sensors").onclick = () => setRangeKind("sensors");
     ui("#con-intel-eraser").onclick = () => setTool("eraser");
@@ -1979,13 +2213,15 @@
             Digit3: "marker",
             Digit4: "text",
             Digit5: "range",
-            Digit6: "eraser",
+            Digit6: "measure",
+            Digit7: "eraser",
             Numpad1: "pen",
             Numpad2: "arrow",
             Numpad3: "marker",
             Numpad4: "text",
             Numpad5: "range",
-            Numpad6: "eraser",
+            Numpad6: "measure",
+            Numpad7: "eraser",
           };
           const tool = tools[event.code];
           if (tool) {
@@ -2007,9 +2243,10 @@
     window.addEventListener("keydown", (event) => {
       if (fromTypingField(event)) return;
       if (event.target && event.target.closest && event.target.closest("#con-intel-host")) return;
-      if (event.key === "Escape" && (state.draft || state.textEdit || state.rangeEdit)) {
+      if (event.key === "Escape" && (state.draft || state.textEdit || state.rangeEdit || state.measureEdit)) {
         state.draft = null;
         state.rangeEdit = null;
+        state.measureEdit = null;
         cancelTextEdit();
         updateStatus();
       }
