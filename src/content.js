@@ -4,8 +4,21 @@ function storageKey(gameId) {
   return `con-intel-strokes:${gameId}`;
 }
 
+function extensionStorage() {
+  try {
+    return typeof chrome !== "undefined" && chrome.storage && chrome.storage.local ? chrome.storage.local : null;
+  } catch (_err) {
+    return null;
+  }
+}
+
 function injectPageScript() {
   if (document.documentElement?.dataset.conIntelInjected === "1") return;
+  try {
+    if (typeof chrome === "undefined" || !chrome.runtime?.getURL) return;
+  } catch (_err) {
+    return;
+  }
   if (document.documentElement) document.documentElement.dataset.conIntelInjected = "1";
 
   const script = document.createElement("script");
@@ -25,8 +38,11 @@ window.addEventListener("message", async (event) => {
   const msg = event.data;
   if (!msg || msg.source !== SOURCE) return;
 
+  const storage = extensionStorage();
+  if (!storage) return;
+
   if (msg.type === "load") {
-    const data = await chrome.storage.local.get(storageKey(msg.gameId));
+    const data = await storage.get(storageKey(msg.gameId));
     window.postMessage(
       {
         source: SOURCE,
@@ -40,14 +56,14 @@ window.addEventListener("message", async (event) => {
   }
 
   if (msg.type === "save") {
-    await chrome.storage.local.set({
+    await storage.set({
       [storageKey(msg.gameId)]: msg.strokes || [],
     });
     return;
   }
 
   if (msg.type === "load-ui") {
-    const data = await chrome.storage.local.get("con-intel-ui");
+    const data = await storage.get("con-intel-ui");
     window.postMessage(
       {
         source: SOURCE,
@@ -60,6 +76,6 @@ window.addEventListener("message", async (event) => {
   }
 
   if (msg.type === "save-ui") {
-    await chrome.storage.local.set({ "con-intel-ui": msg.ui || {} });
+    await storage.set({ "con-intel-ui": msg.ui || {} });
   }
 });

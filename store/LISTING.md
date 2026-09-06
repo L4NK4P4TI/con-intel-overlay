@@ -6,7 +6,7 @@ This extension is **unofficial** and must stay that way in the listing. Do not u
 
 ## Item ID / package
 
-Upload `dist/con-intel-overlay-1.2.2.zip` after running `.\store\pack.ps1`.
+Upload `dist/con-intel-overlay-1.2.6.zip` after running `.\store\pack.ps1`.
 
 ## Product name (max 45 characters)
 
@@ -47,7 +47,7 @@ TOOLS
 • Arrow — heading with Word-style Heads and Line dropdowns, route waypoints, and solid/dash/dot/dash-dot lines
 • Marker — pin a point, or stamp a short CoN icon set (flag, strike, armor, air, navy, city, threat, star, recon)
 • Text — multiline notes on the map (Enter for a new line, Ctrl+Enter or Save to place). Alt-click an existing note to edit it; drag to move
-• Range — Reach (combat + radar/sight hub stays inside combat) or Radar+Sight; drag the combat ring to resize, or the R/S dots / their spoke when sensors sit on that ring; radii labeled in km
+• Range — Reach (combat + radar/sight hub stays inside combat) or Radar+Sight; type km in C/R/S fields or Alt-click a label; drag rings to resize; one R and one S label; combat also shows C at the center when in view
 • Measure — Alt-drag two points to read distance in km. Drag the ends or the line to edit. Route mode clicks waypoints and sums the path
 • Eraser — Alt-click a mark to delete it
 • Color palette — switch colors in one click
