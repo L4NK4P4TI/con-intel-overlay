@@ -11,9 +11,13 @@ Marks are stored in map coordinates, so they stay on the terrain when you pan or
 
 ![CoN Intel Overlay on a match](media/overlay.png)
 
-![Demo of the overlay](media/overlay-demo.mp4)
+![Demo of the overlay](media/overlay-preview.gif)
 
-Captures are from an earlier build. Drop newer screenshot and video files in `media/` when you have them.
+[Watch the full demo](https://github.com/L4NK4P4TI/con-intel-overlay/blob/main/media/overlay-demo.mp4)
+
+GitHub cannot play a repo `.mp4` inside the README, so the clip above is an animated preview. The link opens the full video in GitHub’s player.
+
+Captures are from an earlier build. Drop newer files in `media/` when you have them.
 
 ## Install
 
