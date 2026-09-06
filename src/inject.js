@@ -1,7 +1,8 @@
 (() => {
-  const VERSION = "1.0.1";
+  const VERSION = "1.1.19";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
+  const FEATURE_TTL = false;
   const WRAP_MARGIN = 240;
   const PALETTE = [
     "#ff4d4d",
@@ -31,7 +32,7 @@
   };
   const LOG = (...args) => console.info("[con-intel]", ...args);
 
-  LOG("page script loaded", VERSION, location.href);
+  LOG("page script loaded", VERSION, location.href, { ttl: FEATURE_TTL });
 
   const state = {
     tool: "pen",
@@ -54,6 +55,24 @@
     rangeKind: "reach",
     rangeEdit: null,
     measureEdit: null,
+    snapEnabled: false,
+    measureMode: "segment",
+    travelMode: "surface",
+    speedMultiplier: 4,
+    speedVals: {
+      open: 0,
+      mountains: 0,
+      forest: 0,
+      urban: 0,
+      suburban: 0,
+      jungle: 0,
+      tundra: 0,
+      desert: 0,
+      seas: 0,
+      coastal: 0,
+      flight: 0,
+      grounded: 0,
+    },
     panelLeft: 12,
     panelTop: null,
     expandedLeft: 12,
@@ -150,6 +169,794 @@
     if (!Number.isFinite(km) || km < 0) return "—";
     if (km < 10) return `${km.toFixed(1)} km`;
     return `${Math.round(km).toLocaleString("en-US")} km`;
+  }
+
+  const TERRAIN_FIELDS = [
+    { id: "open", label: "Open Ground" },
+    { id: "mountains", label: "Mountains" },
+    { id: "forest", label: "Forest" },
+    { id: "urban", label: "Urban" },
+    { id: "suburban", label: "Suburban" },
+    { id: "jungle", label: "Jungle" },
+    { id: "tundra", label: "Tundra" },
+    { id: "desert", label: "Desert" },
+    { id: "seas", label: "High Seas" },
+    { id: "coastal", label: "Coastal" },
+    { id: "flight", label: "In Flight" },
+    { id: "grounded", label: "On Ground" },
+  ];
+
+  const SPEED_VAL_TO_KMH = 51.44;
+
+  const TERRAIN_ALIASES = {
+    open: "open",
+    plains: "open",
+    openground: "open",
+    "open ground": "open",
+    mountain: "mountains",
+    mountains: "mountains",
+    forest: "forest",
+    woods: "forest",
+    urban: "urban",
+    city: "urban",
+    suburban: "suburban",
+    jungle: "jungle",
+    tundra: "tundra",
+    arctic: "tundra",
+    desert: "desert",
+    highseas: "seas",
+    "high seas": "seas",
+    ocean: "seas",
+    sea: "seas",
+    coastal: "coastal",
+    coastalwaters: "coastal",
+    "coastal waters": "coastal",
+    inflight: "flight",
+    "in flight": "flight",
+    air: "flight",
+    flight: "flight",
+    ontheground: "grounded",
+    "on the ground": "grounded",
+    grounded: "grounded",
+    onground: "grounded",
+    "on ground": "grounded",
+    high_seas: "seas",
+    coastal_waters: "coastal",
+    open_ground: "open",
+    in_flight: "flight",
+    suburb: "suburban",
+    suburbs: "suburban",
+    capital: "urban",
+    town: "urban",
+    metropolis: "urban",
+    "city center": "urban",
+    "city centre": "urban",
+  };
+
+  let pathApiCache = null;
+  let mapNetworkCache = null;
+  const travelPathCache = new Map();
+  const terrainPointCache = new Map();
+
+  function asMapPoint(raw) {
+    if (!raw) return null;
+    if (Array.isArray(raw) && raw.length >= 2) {
+      const x = Number(raw[0]);
+      const y = Number(raw[1]);
+      return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+    }
+    const x = Number(raw.x ?? raw.lon ?? raw.lng ?? raw[0]);
+    const y = Number(raw.y ?? raw.lat ?? raw[1]);
+    return Number.isFinite(x) && Number.isFinite(y) ? { x, y } : null;
+  }
+
+  function asPathPoints(raw) {
+    if (!raw) return null;
+    if (Array.isArray(raw)) {
+      const pts = raw.map(asMapPoint).filter(Boolean);
+      return pts.length >= 2 ? pts : null;
+    }
+    if (typeof raw !== "object") return null;
+    return (
+      asPathPoints(raw.points) ||
+      asPathPoints(raw.path) ||
+      asPathPoints(raw.route) ||
+      asPathPoints(raw.waypoints) ||
+      asPathPoints(raw.coords) ||
+      asPathPoints(raw.positions)
+    );
+  }
+
+  function callWithPoints(fn, a, b) {
+    if (typeof fn !== "function") return null;
+    const tries = [
+      () => fn(a, b),
+      () => fn(a.x, a.y, b.x, b.y),
+      () => fn({ start: a, end: b }),
+      () => fn({ from: a, to: b }),
+      () => fn.call(null, a, b),
+    ];
+    for (const run of tries) {
+      try {
+        const pts = asPathPoints(run());
+        if (pts) return pts;
+      } catch (_err) {
+        /* next signature */
+      }
+    }
+    return null;
+  }
+
+  function functionLooksLike(name, kind) {
+    const n = String(name || "");
+    if (/^(set|draw|render|delete|destroy|clear|remove|addListener|on[A-Z]|create|start|begin|send|order)/i.test(n)) {
+      return false;
+    }
+    if (kind === "path") {
+      return (
+        /^(path|route)$/i.test(n) ||
+        (/(get|find|calc|compute|build|resolve).*(path|route)|pathBetween|movePath|travelPath|pfind|astar|a_star/i.test(
+          n
+        ) &&
+          !/(svg|xpath|filepath|pathname|path2d)/i.test(n))
+      );
+    }
+    if (kind === "snap") {
+      return /(snap|nearest|closest|project).*(path|route|road|node|point|province|hex)|getNearest.*(path|route|road|province)/i.test(
+        n
+      );
+    }
+    if (kind === "terrain") {
+      return /(get|find|pick|resolve).*(terrain|province|hex|tile)|provinceAt|terrainAt|hexAt|tileAt|itemAtPos/i.test(n);
+    }
+    return false;
+  }
+
+  function discoverRoots() {
+    const game = hup();
+    const widget = game?.ui?.mapWidget;
+    const roots = [
+      widget,
+      widget?.viewport,
+      widget?.mapRenderer,
+      widget?.pathFinder,
+      widget?.pathfinder,
+      widget?.overlay,
+      widget?.pathController,
+      game,
+      game?.map,
+      game?.world,
+      game?.pathFinder,
+      game?.pathfinder,
+      game?.movement,
+      game?.services,
+      game?.ui,
+      game?.gameplay,
+      game?.modules,
+      game?.itemManager,
+      game?.items,
+      widget?.provinceLayer,
+      widget?.hexGrid,
+    ];
+    try {
+      for (const key of Object.keys(game || {})) {
+        const v = game[key];
+        if (v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Node)) roots.push(v);
+      }
+      for (const key of Object.keys(game?.ui || {})) {
+        const v = game.ui[key];
+        if (v && typeof v === "object" && !Array.isArray(v) && !(v instanceof Node)) roots.push(v);
+      }
+    } catch (_err) {
+      /* sealed */
+    }
+    return roots.filter(Boolean).slice(0, 60);
+  }
+
+  function discoverPathApi(force) {
+    if (
+      pathApiCache &&
+      !force &&
+      (pathApiCache.pathFns.length || pathApiCache.snapFns.length || pathApiCache.terrainFns.length)
+    ) {
+      return pathApiCache;
+    }
+    const found = { getPath: null, snap: null, terrain: null, pathFns: [], snapFns: [], terrainFns: [], names: [] };
+    const collect = (obj, kind, bucket) => {
+      try {
+        const names = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
+        const proto = Object.getPrototypeOf(obj);
+        if (proto && proto !== Object.prototype) {
+          Object.getOwnPropertyNames(proto).forEach((name) => names.add(name));
+        }
+        for (const name of names) {
+          if (!functionLooksLike(name, kind)) continue;
+          const fn = obj[name];
+          if (typeof fn !== "function") continue;
+          found.names.push(name);
+          bucket.push(fn.bind(obj));
+        }
+      } catch (_err) {
+        /* sealed object */
+      }
+    };
+
+    for (const obj of discoverRoots()) {
+      collect(obj, "path", found.pathFns);
+      collect(obj, "snap", found.snapFns);
+      collect(obj, "terrain", found.terrainFns);
+    }
+    found.snap = found.snapFns[0] || null;
+    found.terrain = found.terrainFns[0] || null;
+
+    pathApiCache = found;
+    try {
+      LOG("experimental path api", {
+        pathFns: found.pathFns.length,
+        snapFns: found.snapFns.length,
+        terrainFns: found.terrainFns.length,
+        names: found.names.slice(0, 40),
+        mapWidget: widgetKeys(hup()?.ui?.mapWidget),
+        mapWidgetFns: functionNames(hup()?.ui?.mapWidget),
+      });
+    } catch (_err) {
+      LOG("experimental path api", found.names.slice(0, 40));
+    }
+    return found;
+  }
+
+  function widgetKeys(obj) {
+    if (!obj || typeof obj !== "object") return [];
+    try {
+      return [...new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)])].slice(0, 50);
+    } catch (_err) {
+      return [];
+    }
+  }
+
+  function functionNames(obj) {
+    if (!obj || typeof obj !== "object") return [];
+    const names = [];
+    try {
+      const set = new Set([...Object.keys(obj), ...Object.getOwnPropertyNames(obj)]);
+      const proto = Object.getPrototypeOf(obj);
+      if (proto && proto !== Object.prototype) {
+        Object.getOwnPropertyNames(proto).forEach((name) => set.add(name));
+      }
+      for (const name of set) {
+        try {
+          if (typeof obj[name] === "function") names.push(name);
+        } catch (_err) {
+          /* getter */
+        }
+      }
+    } catch (_err) {
+      return [];
+    }
+    return names.slice(0, 80);
+  }
+
+  function normalizeTerrain(raw) {
+    if (raw == null) return null;
+    if (typeof raw === "object") return terrainFromProvince(raw);
+    const key = String(raw).trim().toLowerCase().replace(/[_-]+/g, " ");
+    if (TERRAIN_ALIASES[key]) return TERRAIN_ALIASES[key];
+    const compact = key.replace(/\s+/g, "");
+    return TERRAIN_ALIASES[compact] || null;
+  }
+
+  function provinceLooksLikeCity(obj) {
+    if (!obj || typeof obj !== "object") return false;
+    if (obj.isCity || obj.hasCity || obj.isCapital || obj.isUrban || obj.urban === true || obj.city === true) {
+      return true;
+    }
+    for (const key of ["cityId", "cityID", "city_id", "cityid"]) {
+      const n = obj[key];
+      if (n != null && n !== false && n !== "" && Number(n) !== 0) return true;
+    }
+    if (typeof obj.cityLevel === "number" && obj.cityLevel > 0) return true;
+    if (typeof obj.city === "string" && obj.city.trim()) return true;
+    if (typeof obj.cityName === "string" && obj.cityName.trim()) return true;
+    if (obj.city && typeof obj.city === "object") return true;
+    const t = String(obj.type ?? obj.kind ?? obj.class ?? obj.itemType ?? obj.category ?? "");
+    return /\bcity\b|urban/i.test(t);
+  }
+
+  function terrainFromProvince(obj) {
+    if (!obj || typeof obj !== "object") return null;
+    if (provinceLooksLikeCity(obj)) return "urban";
+    const nested = obj.data && typeof obj.data === "object" ? obj.data : null;
+    const props = obj.properties && typeof obj.properties === "object" ? obj.properties : null;
+    const direct =
+      (obj.terrain != null && typeof obj.terrain !== "object" ? normalizeTerrain(obj.terrain) : null) ||
+      (obj.terrain && typeof obj.terrain === "object" && obj.terrain !== obj
+        ? terrainFromProvince(obj.terrain)
+        : null) ||
+      normalizeTerrain(obj.terrainType) ||
+      normalizeTerrain(obj.terrain_type) ||
+      normalizeTerrain(obj.groundType) ||
+      normalizeTerrain(obj.biome) ||
+      normalizeTerrain(obj.tileType) ||
+      normalizeTerrain(obj.landscape) ||
+      (nested ? normalizeTerrain(nested.terrain) || normalizeTerrain(nested.terrainType) : null) ||
+      (props ? normalizeTerrain(props.terrain) || normalizeTerrain(props.terrainType) : null);
+    if (direct && direct !== "flight") return direct;
+    const type = obj.type ?? obj.kind ?? obj.class;
+    if (typeof type === "string" && !/^(province|city|region|hex|tile|item)$/i.test(type)) {
+      const kind = normalizeTerrain(type);
+      if (kind && kind !== "flight") return kind;
+    }
+    return null;
+  }
+
+  function terrainAt(mapPos) {
+    if (!mapPos) return null;
+    const api = discoverPathApi();
+    const fns = api.terrain ? [api.terrain, ...api.terrainFns] : api.terrainFns || [];
+    for (const fn of fns) {
+      const tries = [() => fn(mapPos), () => fn(mapPos.x, mapPos.y)];
+      for (const run of tries) {
+        try {
+          const kind = normalizeTerrain(run());
+          if (kind) {
+            api.terrain = fn;
+            return kind;
+          }
+        } catch (_err) {
+          /* next */
+        }
+      }
+    }
+    return null;
+  }
+
+  function mapLerp(a, b, t) {
+    const wrap = getMapApi()?.wrapWidth() || mapExtent().width || 0;
+    return {
+      x: a.x + wrapDeltaX(a.x, b.x, wrap) * t,
+      y: a.y + (b.y - a.y) * t,
+    };
+  }
+
+  function surfaceKindAt(mapPos) {
+    if (!mapPos) return null;
+    const key = `${Math.round(mapPos.x / 6)}:${Math.round(mapPos.y / 6)}`;
+    if (terrainPointCache.has(key)) return terrainPointCache.get(key);
+    const rec = provinceRecord(mapPos);
+    const node = nearestProvince(mapPos, getMapNetwork());
+    let kind = null;
+    if (provinceLooksLikeCity(rec) || node?.city) kind = "urban";
+    else if (node?.terrain && node.terrain !== "flight") kind = node.terrain;
+    else if (mapPos.terrain && mapPos.terrain !== "flight" && mapPos.terrain !== "open") kind = mapPos.terrain;
+    else {
+      kind = terrainFromProvince(rec);
+      if (kind === "flight") kind = null;
+    }
+    if (!kind) {
+      kind = terrainAt(mapPos);
+      if (kind === "flight") kind = null;
+    }
+    if (kind === "open" && (provinceLooksLikeCity(rec) || node?.city)) kind = "urban";
+    if (terrainPointCache.size > 1600) terrainPointCache.clear();
+    terrainPointCache.set(key, kind);
+    return kind;
+  }
+
+  function provinceRecord(mapPos) {
+    if (!mapPos) return null;
+    const api = discoverPathApi();
+    for (const fn of api.terrainFns || []) {
+      const tries = [() => fn(mapPos), () => fn(mapPos.x, mapPos.y)];
+      for (const run of tries) {
+        try {
+          const rec = run();
+          if (rec && typeof rec === "object" && !(rec instanceof Node)) return rec;
+        } catch (_err) {
+          /* next */
+        }
+      }
+    }
+    return null;
+  }
+
+  function provinceCenter(rec) {
+    if (!rec || typeof rec !== "object") return null;
+    const pt =
+      asMapPoint(rec.center) ||
+      asMapPoint(rec.centroid) ||
+      asMapPoint(rec.position) ||
+      asMapPoint(rec.pos) ||
+      asMapPoint(rec.mapPos) ||
+      asMapPoint(rec);
+    if (!pt) return null;
+    if (!Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return null;
+    if (Math.abs(pt.x) + Math.abs(pt.y) < 8) return null;
+    return pt;
+  }
+
+  function tryPathFn(fn, a, b) {
+    const pts = callWithPoints(fn, a, b);
+    if (pts) return pts;
+    const pa = provinceRecord(a);
+    const pb = provinceRecord(b);
+    if (!pa || !pb) return null;
+    const idA = pa.id ?? pa.provinceId ?? pa.province_id;
+    const idB = pb.id ?? pb.provinceId ?? pb.province_id;
+    const tries = [() => fn(pa, pb), () => (idA != null && idB != null ? fn(idA, idB) : null)];
+    for (const run of tries) {
+      try {
+        const path = asPathPoints(run());
+        if (path) return path;
+      } catch (_err) {
+        /* next */
+      }
+    }
+    return null;
+  }
+
+  function snapMapPos(mapPos) {
+    if (!mapPos || !state.snapEnabled) return mapPos;
+    const api = discoverPathApi();
+    for (const fn of api.snapFns || []) {
+      try {
+        const snapped = asMapPoint(fn(mapPos)) || asMapPoint(fn(mapPos.x, mapPos.y));
+        if (snapped) {
+          api.snap = fn;
+          return snapped;
+        }
+      } catch (_err) {
+        /* next */
+      }
+    }
+    const center = provinceCenter(provinceRecord(mapPos)) || nearestNetworkPoint(mapPos);
+    return center || mapPos;
+  }
+
+  function pointerMapPos(event, surface) {
+    return snapMapPos(toMap(eventToScreen(event, surface)));
+  }
+
+  function travelPath(a, b, useSnap) {
+    if (!a || !b) return a && b ? [a, b] : [];
+    const snapOn = useSnap != null ? !!useSnap : state.snapEnabled;
+    if (!snapOn) return [a, b];
+    const api = discoverPathApi();
+    const key = `${Math.round(a.x)}:${Math.round(a.y)}>${Math.round(b.x)}:${Math.round(b.y)}`;
+    if (travelPathCache.has(key)) return travelPathCache.get(key);
+    let pts = api.getPath ? tryPathFn(api.getPath, a, b) : null;
+    if (!pts) {
+      for (const fn of api.pathFns || []) {
+        pts = tryPathFn(fn, a, b);
+        if (pts) {
+          api.getPath = fn;
+          LOG("locked path fn", fn.name || "anonymous");
+          break;
+        }
+      }
+    }
+    const path = pts && pts.length >= 2 ? pts : networkPath(a, b);
+    const copy = (path && path.length >= 2 ? path : [a, b]).map((p) => ({
+      x: p.x,
+      y: p.y,
+      terrain: p.terrain || null,
+    }));
+    if (travelPathCache.size > 120) travelPathCache.clear();
+    travelPathCache.set(key, copy);
+    return copy.map((p) => ({ x: p.x, y: p.y, terrain: p.terrain || null }));
+  }
+
+  function densifyWaypoints(points, useSnap) {
+    if (!points || points.length < 2) return points || [];
+    if (!useSnap) return points.map((p) => ({ x: p.x, y: p.y, terrain: p.terrain || null }));
+    const out = [];
+    for (let i = 1; i < points.length; i += 1) {
+      const raw = travelPath(points[i - 1], points[i], true);
+      const seg = (raw && raw.length >= 2 ? raw : [points[i - 1], points[i]]).map((p) => ({
+        x: p.x,
+        y: p.y,
+        terrain: p.terrain || null,
+      }));
+      if (out.length) {
+        const last = out[out.length - 1];
+        if (last && last.x === seg[0].x && last.y === seg[0].y) seg.shift();
+      }
+      for (const p of seg) out.push(p);
+    }
+    return out.length >= 2 ? out : points.map((p) => ({ x: p.x, y: p.y, terrain: p.terrain || null }));
+  }
+
+  function looksLikeProvince(obj) {
+    if (!obj || typeof obj !== "object") return false;
+    const type = String(obj.type ?? obj.kind ?? obj.class ?? obj.itemType ?? obj.category ?? "");
+    if (/army|unit|troop|stack|airwing|naval/i.test(type)) return false;
+    if (!provinceCenter(obj)) return false;
+    if (/province|city|region|hex|tile/i.test(type)) return true;
+    const neighbors = obj.neighbors || obj.neighbourIds || obj.adjacent || obj.adjacentIds || obj.connections;
+    if (Array.isArray(neighbors) && neighbors.length) return true;
+    if (obj.isProvince) return true;
+    return false;
+  }
+
+  function addProvinceNode(net, obj) {
+    const center = provinceCenter(obj);
+    if (!center) return;
+    const id = String(obj.id ?? obj.provinceId ?? obj.province_id ?? `${Math.round(center.x)}:${Math.round(center.y)}`);
+    const raw = obj.neighbors || obj.neighbourIds || obj.adjacent || obj.adjacentIds || obj.connections || [];
+    const neighbors = Array.isArray(raw)
+      ? raw
+          .map((n) => (n && typeof n === "object" ? n.id ?? n.provinceId ?? n.province_id : n))
+          .filter((n) => n != null)
+          .map((n) => String(n))
+      : [];
+    const prev = net.byId.get(id);
+    const city = provinceLooksLikeCity(obj) || !!prev?.city;
+    const terrain = city ? "urban" : normalizeTerrain(obj) || prev?.terrain || null;
+    net.byId.set(id, {
+      id,
+      center,
+      neighbors: neighbors.length ? neighbors : prev?.neighbors || [],
+      city,
+      terrain,
+    });
+    if (city) {
+      for (const other of net.byId.values()) {
+        if (other.id === id) continue;
+        if (mapSeparation(center, other.center) > 18) continue;
+        other.city = true;
+        if (!other.terrain || other.terrain === "open") other.terrain = "urban";
+      }
+    }
+  }
+
+  function harvestMapNetwork() {
+    const net = { byId: new Map(), polylines: [] };
+    const seen = new Set();
+    const visit = (obj, depth) => {
+      if (!obj || typeof obj !== "object" || depth > 5 || seen.size > 900) return;
+      if (obj instanceof Node || obj instanceof Window) return;
+      if (seen.has(obj)) return;
+      seen.add(obj);
+      const pts = asPathPoints(obj);
+      if (pts && pts.length >= 3) net.polylines.push(pts);
+      if (looksLikeProvince(obj)) {
+        addProvinceNode(net, obj);
+        return;
+      }
+      let values;
+      try {
+        values = Array.isArray(obj) ? obj : Object.values(obj);
+      } catch (_err) {
+        return;
+      }
+      if (values.length > 6000) return;
+      const sample = values.slice(0, 10).filter((v) => v && typeof v === "object");
+      if (values.length >= 12 && sample.length >= 8 && sample.every((v) => looksLikeProvince(v) || provinceCenter(v))) {
+        for (const v of values) {
+          if (looksLikeProvince(v)) addProvinceNode(net, v);
+        }
+        return;
+      }
+      for (const v of values) {
+        if (v && typeof v === "object") visit(v, depth + 1);
+      }
+    };
+    const game = hup();
+    const widget = game?.ui?.mapWidget;
+    for (const seed of [
+      game?.provinces,
+      game?.provinceList,
+      game?.map?.provinces,
+      game?.world?.provinces,
+      game?.items,
+      game?.itemManager,
+      widget?.provinces,
+      widget?.provinceLayer,
+      widget?.pathOverlay,
+      widget,
+      game,
+    ]) {
+      if (seed) visit(seed, 0);
+    }
+    LOG("map network", { provinces: net.byId.size, polylines: net.polylines.length });
+    return net;
+  }
+
+  function getMapNetwork(force) {
+    if (mapNetworkCache && !force) return mapNetworkCache;
+    mapNetworkCache = harvestMapNetwork();
+    return mapNetworkCache;
+  }
+
+  function nearestProvince(mapPos, net) {
+    if (!mapPos || !net?.byId?.size) return null;
+    let best = null;
+    let bestD = Infinity;
+    for (const node of net.byId.values()) {
+      const d = mapSeparation(mapPos, node.center);
+      if (d < bestD - 6) {
+        bestD = d;
+        best = node;
+      } else if (best && Math.abs(d - bestD) <= 12) {
+        const prefer = (node.city && !best.city) || (node.terrain === "urban" && best.terrain === "open");
+        if (prefer) {
+          bestD = Math.min(bestD, d);
+          best = node;
+        }
+      } else if (d < bestD) {
+        bestD = d;
+        best = node;
+      }
+    }
+    return bestD <= 140 ? best : null;
+  }
+
+  function nearestNetworkPoint(mapPos) {
+    const net = getMapNetwork();
+    const province = nearestProvince(mapPos, net);
+    if (province) return province.center;
+    let best = null;
+    let bestD = Infinity;
+    for (const line of net.polylines) {
+      for (const p of line) {
+        const d = mapSeparation(mapPos, p);
+        if (d < bestD) {
+          bestD = d;
+          best = p;
+        }
+      }
+    }
+    return bestD <= 80 ? best : null;
+  }
+
+  function networkPath(a, b) {
+    const net = getMapNetwork();
+    const start = nearestProvince(a, net);
+    const end = nearestProvince(b, net);
+    if (!start || !end) {
+      const sa = nearestNetworkPoint(a);
+      const sb = nearestNetworkPoint(b);
+      return sa && sb ? [sa, sb] : null;
+    }
+    if (start.id === end.id) return [start.center];
+    const prev = new Map([[start.id, null]]);
+    const q = [start.id];
+    for (let i = 0; i < q.length && q.length < 4000; i += 1) {
+      const id = q[i];
+      if (id === end.id) break;
+      const node = net.byId.get(id);
+      for (const raw of node?.neighbors || []) {
+        if (prev.has(raw) || !net.byId.has(raw)) continue;
+        prev.set(raw, id);
+        q.push(raw);
+      }
+    }
+    if (!prev.has(end.id)) return [start.center, end.center];
+    const ids = [];
+    let cur = end.id;
+    while (cur != null) {
+      ids.push(cur);
+      cur = prev.get(cur);
+    }
+    ids.reverse();
+    return ids
+      .map((id) => {
+        const node = net.byId.get(id);
+        if (!node?.center) return null;
+        return { x: node.center.x, y: node.center.y, terrain: node.terrain || null };
+      })
+      .filter(Boolean);
+  }
+
+  function measurePoly(stroke) {
+    const pts = stroke?.points;
+    if (!pts || pts.length < 2) return pts || [];
+    const follow =
+      !!stroke.snap || (FEATURE_TTL && travelOf(stroke) === "surface");
+    return densifyWaypoints(pts, follow);
+  }
+
+  function polylineKm(points) {
+    let km = 0;
+    for (let i = 1; i < points.length; i += 1) km += mapSeparation(points[i - 1], points[i]);
+    return km;
+  }
+
+  function speedValFor(terrainId) {
+    const n = Number(state.speedVals[terrainId]);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  }
+
+  function gameSpeedFactor() {
+    const n = Number(state.speedMultiplier);
+    return Number.isFinite(n) && n > 0 ? n : 1;
+  }
+
+  function speedKmhFor(terrainId) {
+    const val = speedValFor(terrainId);
+    if (!(val > 0)) return 0;
+    return val * SPEED_VAL_TO_KMH;
+  }
+
+  function travelOf(stroke) {
+    return stroke && stroke.travel === "air" ? "air" : "surface";
+  }
+
+  function segmentHours(a, b, travel) {
+    const km = mapSeparation(a, b);
+    if (!(km > 0)) return 0;
+    if (travel === "air") {
+      const speed = speedKmhFor("flight");
+      return speed > 0 ? km / speed : null;
+    }
+    const kindA = surfaceKindAt(a);
+    const kindB = surfaceKindAt(b);
+    const speedA = speedKmhFor(kindA);
+    const speedB = speedKmhFor(kindB);
+    if (speedA > 0 && speedB > 0 && kindA && kindB && kindA !== kindB) {
+      return km / 2 / speedA + km / 2 / speedB;
+    }
+    const steps = Math.max(8, Math.min(48, Math.ceil(km / 12)));
+    let hours = 0;
+    let lastKind = a?.terrain && a.terrain !== "flight" ? a.terrain : null;
+    let pendingKm = 0;
+    for (let i = 0; i < steps; i += 1) {
+      const t = i === 0 ? 0 : (i + 0.5) / steps;
+      let kind = surfaceKindAt(mapLerp(a, b, t));
+      if (!kind) kind = lastKind;
+      const sliceKm = km / steps;
+      const speed = speedKmhFor(kind);
+      if (!(speed > 0)) {
+        pendingKm += sliceKm;
+        if (kind) lastKind = kind;
+        continue;
+      }
+      lastKind = kind;
+      hours += (sliceKm + pendingKm) / speed;
+      pendingKm = 0;
+    }
+    if (pendingKm > 0) {
+      const speed = speedKmhFor(lastKind);
+      if (!(speed > 0)) return null;
+      hours += pendingKm / speed;
+    }
+    return hours;
+  }
+
+  function routeHours(points, travel) {
+    if (!points || points.length < 2) return null;
+    let hours = 0;
+    for (let i = 1; i < points.length; i += 1) {
+      const slice = segmentHours(points[i - 1], points[i], travel);
+      if (slice == null) return null;
+      hours += slice;
+    }
+    return hours;
+  }
+
+  function formatHours(hours) {
+    if (!Number.isFinite(hours) || hours < 0) return null;
+    if (hours < 1) return `${Math.max(1, Math.round(hours * 60))} min`;
+    const h = Math.floor(hours);
+    const m = Math.round((hours - h) * 60);
+    if (!m) return `${h} h`;
+    if (m === 60) return `${h + 1} h`;
+    return `${h} h ${m} m`;
+  }
+
+  function measureLabel(stroke) {
+    const poly = measurePoly(stroke);
+    const km = polylineKm(poly);
+    if (!FEATURE_TTL) return formatKm(km);
+    const gameHours = routeHours(poly, travelOf(stroke));
+    const ttl = formatHours(gameHours);
+    if (!ttl) {
+      const text = formatKm(km);
+      return travelOf(stroke) === "air" ? `${text} · air` : text;
+    }
+    const factor = gameSpeedFactor();
+    const real = factor !== 1 ? formatHours(gameHours / factor) : null;
+    let text = real ? `${formatKm(km)} · ${ttl} (${real})` : `${formatKm(km)} · ${ttl}`;
+    return travelOf(stroke) === "air" ? `${text} · air` : text;
   }
 
   function showBoot(message) {
@@ -320,6 +1127,11 @@
             expandedLeft: state.expandedLeft,
             expandedTop: state.expandedTop,
             dockCorner: state.dockCorner,
+            snapEnabled: state.snapEnabled,
+            measureMode: state.measureMode,
+            travelMode: state.travelMode,
+            speedMultiplier: state.speedMultiplier,
+            speedVals: { ...state.speedVals },
           },
         },
         "*"
@@ -390,7 +1202,10 @@
       }
       if (item.type === "measure") {
         if (points.length < 2) continue;
-        stroke.points = points.slice(0, 2);
+        stroke.points = points.slice(0, item.mode === "route" ? 80 : 2);
+        stroke.mode = item.mode === "route" ? "route" : "segment";
+        stroke.snap = !!item.snap;
+        stroke.travel = item.travel === "air" ? "air" : "surface";
       }
       out.push(stroke);
       if (out.length >= 4000) break;
@@ -866,40 +1681,37 @@
   }
 
   function paintMeasure(ctx, stroke, canvas) {
-    const a = stroke.points[0];
-    const b = stroke.points[1] || a;
-    if (!a) return;
-    const label = formatKm(mapDistanceKm(a, b));
+    const poly = measurePoly(stroke);
+    if (poly.length < 2) return;
+    const label = measureLabel(stroke);
     const showHandles = state.tool === "measure";
-    for (const path of strokeScreenPath({ points: [a, b] }, canvas)) {
+    for (const path of strokeScreenPath({ points: poly }, canvas)) {
       if (path.length < 2) continue;
       ctx.save();
-      ctx.setLineDash([7, 5]);
+      ctx.setLineDash(stroke.snap ? [5, 4] : [7, 5]);
       ctx.beginPath();
       ctx.moveTo(path[0].x, path[0].y);
-      ctx.lineTo(path[1].x, path[1].y);
+      for (let i = 1; i < path.length; i += 1) ctx.lineTo(path[i].x, path[i].y);
       ctx.stroke();
       ctx.restore();
-      ctx.beginPath();
-      ctx.arc(path[0].x, path[0].y, 4 + stroke.width, 0, Math.PI * 2);
-      ctx.fill();
-      ctx.beginPath();
-      ctx.arc(path[1].x, path[1].y, 4 + stroke.width, 0, Math.PI * 2);
-      ctx.fill();
-      const mid = { x: (path[0].x + path[1].x) / 2, y: (path[0].y + path[1].y) / 2 };
+      const mid = path[Math.floor(path.length / 2)];
       paintOutlinedLabel(ctx, label, mid.x + 8, mid.y - 6, stroke.color);
-      if (showHandles) {
-        ctx.save();
-        ctx.strokeStyle = "rgba(255, 224, 130, 0.95)";
-        ctx.lineWidth = 1.5;
-        ctx.setLineDash([]);
+    }
+    for (const path of strokeScreenPath({ points: stroke.points }, canvas)) {
+      for (const p of path) {
         ctx.beginPath();
-        ctx.arc(path[0].x, path[0].y, 9 + stroke.width, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.beginPath();
-        ctx.arc(path[1].x, path[1].y, 9 + stroke.width, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
+        ctx.arc(p.x, p.y, 4 + stroke.width, 0, Math.PI * 2);
+        ctx.fill();
+        if (showHandles) {
+          ctx.save();
+          ctx.strokeStyle = "rgba(255, 224, 130, 0.95)";
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([]);
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, 9 + stroke.width, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
     }
   }
@@ -914,11 +1726,15 @@
         bestDist = dist;
       }
     };
-    for (const path of strokeScreenPath({ points: stroke.points.slice(0, 2) }, canvas)) {
-      if (path.length < 2) continue;
-      consider("a", Math.hypot(path[0].x - screen.x, path[0].y - screen.y), pad + 4);
-      consider("b", Math.hypot(path[1].x - screen.x, path[1].y - screen.y), pad + 4);
-      consider("move", distToSegment(screen, path[0], path[1]), pad);
+    for (const path of strokeScreenPath({ points: stroke.points }, canvas)) {
+      path.forEach((p, i) => {
+        consider(`v${i}`, Math.hypot(p.x - screen.x, p.y - screen.y), pad + 4);
+      });
+    }
+    for (const path of strokeScreenPath({ points: measurePoly(stroke) }, canvas)) {
+      for (let i = 1; i < path.length; i += 1) {
+        consider("move", distToSegment(screen, path[i - 1], path[i]), pad);
+      }
     }
     return best;
   }
@@ -1177,6 +1993,9 @@
       state.draft.points = [mapPos];
     }
     if (state.tool === "measure") {
+      state.draft.mode = state.measureMode === "route" ? "route" : "segment";
+      state.draft.travel = FEATURE_TTL && state.travelMode === "air" ? "air" : "surface";
+      state.draft.snap = !!state.snapEnabled && state.draft.travel !== "air";
       state.draft.points = [mapPos, { x: mapPos.x, y: mapPos.y }];
     }
   }
@@ -1201,14 +2020,26 @@
       state.draft.points = [layout.origin];
     }
     if (state.draft.type === "measure") {
-      const origin = fromMap(state.draft.points[0]);
-      const tip = fromMap(state.draft.points[1] || state.draft.points[0]);
-      if (Math.hypot(tip.x - origin.x, tip.y - origin.y) < 12) {
+      const pts = state.draft.points.filter((p, i, all) => {
+        if (i === 0) return true;
+        return mapSeparation(all[i - 1], p) >= 1;
+      });
+      if (pts.length < 2) {
         state.draft = null;
         updateStatus();
         return;
       }
-      state.draft.points = [state.draft.points[0], state.draft.points[1]];
+      const origin = fromMap(pts[0]);
+      const tip = fromMap(pts[pts.length - 1]);
+      if (pts.length === 2 && Math.hypot(tip.x - origin.x, tip.y - origin.y) < 12) {
+        state.draft = null;
+        updateStatus();
+        return;
+      }
+      state.draft.points = pts;
+      state.draft.mode = state.draft.mode === "route" ? "route" : "segment";
+      state.draft.travel = state.draft.travel === "air" ? "air" : "surface";
+      state.draft.snap = !!state.draft.snap && state.draft.travel !== "air";
     }
     if (state.draft.points.length) state.strokes.push(state.draft);
     state.draft = null;
@@ -1409,6 +2240,14 @@
       return !!(container && (target === container || container.contains(target))) && !isOnToolbar(event);
     };
 
+    let eatNextContextMenu = false;
+
+    const finishRouteClick = (event) => {
+      eat(event);
+      eatNextContextMenu = true;
+      finishDraft();
+    };
+
     const onDown = (event) => {
       if (isOnToolbar(event)) return;
       if (state.textEdit && overMap(event)) {
@@ -1417,6 +2256,21 @@
       }
       if (!overMap(event)) return;
       if (state.draft) {
+        if (state.draft.type === "measure" && state.draft.mode === "route" && event.button === 2) {
+          finishRouteClick(event);
+          return;
+        }
+        if (state.draft.type === "measure" && state.draft.mode === "route" && isDrawChord(event)) {
+          eat(event);
+          const surface = drawCanvas();
+          if (!surface) return;
+          const mapPos = pointerMapPos(event, surface);
+          const pts = state.draft.points;
+          pts[pts.length - 1] = mapPos;
+          pts.push({ x: mapPos.x, y: mapPos.y });
+          updateStatus();
+          return;
+        }
         eat(event);
         return;
       }
@@ -1424,7 +2278,7 @@
       eat(event);
       const surface = drawCanvas();
       if (!surface) return;
-      const mapPos = toMap(eventToScreen(event, surface));
+      const mapPos = pointerMapPos(event, surface);
       if (state.tool === "marker") {
         startDraft(mapPos);
         finishDraft();
@@ -1464,7 +2318,7 @@
             id: stroke.id,
             mode: handle.mode,
             grab: mapPos,
-            start: stroke.points.slice(0, 2).map((p) => ({ x: p.x, y: p.y })),
+            start: stroke.points.map((p) => ({ x: p.x, y: p.y })),
           };
           state.hoverStrokeId = stroke.id;
           return;
@@ -1490,7 +2344,8 @@
         if (!surface) return;
         const stroke = state.strokes.find((item) => item.id === state.rangeEdit.id);
         if (!stroke) return;
-        const mapPos = toMap(eventToScreen(event, surface));
+        const raw = toMap(eventToScreen(event, surface));
+        const mapPos = state.rangeEdit.mode === "move" ? snapMapPos(raw) : raw;
         if (state.rangeEdit.mode === "move") moveRangeOrigin(stroke, mapPos);
         else if (state.rangeEdit.mode === "orbit") {
           setRangeHeading(stroke, mapPos, state.rangeEdit.combatRadius);
@@ -1507,8 +2362,10 @@
         if (!surface) return;
         const stroke = state.strokes.find((item) => item.id === state.measureEdit.id);
         if (!stroke) return;
-        const mapPos = toMap(eventToScreen(event, surface));
-        if (state.measureEdit.mode === "a") stroke.points[0] = mapPos;
+        const mapPos = pointerMapPos(event, surface);
+        const vertex = /^v(\d+)$/.exec(state.measureEdit.mode);
+        if (vertex) stroke.points[Number(vertex[1])] = mapPos;
+        else if (state.measureEdit.mode === "a") stroke.points[0] = mapPos;
         else if (state.measureEdit.mode === "b") stroke.points[1] = mapPos;
         else {
           const dx = mapPos.x - state.measureEdit.grab.x;
@@ -1521,13 +2378,22 @@
       if (!state.draft || state.draft.type === "text") return;
       eat(event);
       if (!surface) return;
-      const mapPos = toMap(eventToScreen(event, surface));
+      const mapPos = pointerMapPos(event, surface);
       if (state.draft.type === "range") {
-        if (state.draft.kind === "sensors") applySensorsFromDrag(state.draft, mapPos);
-        else applyReachFromDrag(state.draft, mapPos);
+        const raw = toMap(eventToScreen(event, surface));
+        if (state.draft.kind === "sensors") applySensorsFromDrag(state.draft, raw);
+        else applyReachFromDrag(state.draft, raw);
         return;
       }
-      if (state.tool === "arrow" || state.draft.type === "measure") {
+      if (state.draft.type === "measure") {
+        if (state.draft.mode === "route") {
+          state.draft.points[state.draft.points.length - 1] = mapPos;
+        } else {
+          state.draft.points = [state.draft.points[0], mapPos];
+        }
+        return;
+      }
+      if (state.tool === "arrow") {
         state.draft.points = [state.draft.points[0], mapPos];
         return;
       }
@@ -1535,6 +2401,10 @@
     };
 
     const onUp = (event) => {
+      if (eatNextContextMenu && event.button === 2) {
+        eat(event);
+        return;
+      }
       if (state.erasing) {
         state.erasing = false;
         eat(event);
@@ -1553,6 +2423,10 @@
         return;
       }
       if (!state.draft || state.draft.type === "text") return;
+      if (state.draft.type === "measure" && state.draft.mode === "route") {
+        eat(event);
+        return;
+      }
       eat(event);
       finishDraft();
     };
@@ -1562,6 +2436,15 @@
     window.addEventListener("pointermove", onMove, opts);
     window.addEventListener("pointerup", onUp, opts);
     window.addEventListener("pointercancel", onUp, opts);
+    window.addEventListener(
+      "contextmenu",
+      (event) => {
+        if (!eatNextContextMenu) return;
+        eatNextContextMenu = false;
+        eat(event);
+      },
+      opts
+    );
 
     const setDrawCursor = (on) => {
       const container = getMapApi()?.getContainer();
@@ -1589,6 +2472,10 @@
     if (note) note.hidden = tool !== "text";
     const range = ui("#con-intel-range-wrap");
     if (range) range.hidden = tool !== "range";
+    const nav = ui("#con-intel-nav-wrap");
+    if (nav) nav.hidden = tool !== "marker" && tool !== "range" && tool !== "measure";
+    const extra = ui("#con-intel-measure-extra");
+    if (extra) extra.hidden = tool !== "measure";
     updateStatus();
     applyPanelLayout();
   }
@@ -1647,7 +2534,17 @@
       state.tool === "eraser"
         ? "Hold Alt + click a mark"
         : state.tool === "measure"
-          ? "Alt-drag to measure km · drag ends to adjust"
+          ? state.draft?.mode === "route" || state.measureMode === "route"
+            ? FEATURE_TTL && state.travelMode === "air"
+              ? "Air route · Alt-click waypoints · right-click to finish"
+              : "Alt-click waypoints · right-click to finish"
+            : FEATURE_TTL && state.travelMode === "air"
+              ? "Air: Alt-drag · In Flight TTL"
+              : state.snapEnabled
+                ? "Alt-drag along travel path (experimental)"
+                : FEATURE_TTL
+                  ? "Alt-drag straight line · terrain TTL"
+                  : "Alt-drag to measure km"
           : state.tool === "range"
           ? state.rangeKind === "sensors"
             ? "Alt-drag radar size · origin moves · R/S dots resize"
@@ -1655,7 +2552,15 @@
           : state.tool === "text" || state.tool === "marker"
             ? "Hold Alt + click"
             : "Hold Alt + drag";
-    el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}`;
+    el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}${
+      state.snapEnabled
+        ? mapNetworkCache?.byId?.size
+          ? ` · snap ${mapNetworkCache.byId.size} provinces`
+          : pathApiCache?.getPath || (pathApiCache?.pathFns || []).length
+            ? " · snap path"
+            : " · pathfinder not found"
+        : ""
+    }`;
   }
 
   function clampPanel(left, top, size) {
@@ -1840,6 +2745,61 @@
     handle.addEventListener("pointercancel", endDrag);
   }
 
+  function syncNavUi() {
+    ui("#con-intel-snap")?.classList.toggle("active", !!state.snapEnabled);
+    ui("#con-intel-seg")?.classList.toggle("active", state.measureMode !== "route");
+    ui("#con-intel-route")?.classList.toggle("active", state.measureMode === "route");
+    ui("#con-intel-surface")?.classList.toggle("active", state.travelMode !== "air");
+    ui("#con-intel-air")?.classList.toggle("active", state.travelMode === "air");
+    if (!FEATURE_TTL) return;
+    const mult = ui("#con-intel-speed-mult");
+    if (mult && document.activeElement !== mult) mult.value = String(state.speedMultiplier || 1);
+    for (const field of TERRAIN_FIELDS) {
+      const input = ui(`#con-intel-sv-${field.id}`);
+      if (input && document.activeElement !== input) {
+        input.value = state.speedVals[field.id] ? String(state.speedVals[field.id]) : "";
+      }
+    }
+  }
+
+  function setSnapEnabled(on) {
+    state.snapEnabled = !!on;
+    travelPathCache.clear();
+    terrainPointCache.clear();
+    if (on) {
+      pathApiCache = null;
+      mapNetworkCache = null;
+      discoverPathApi(true);
+      getMapNetwork(true);
+    }
+    if (state.draft?.type === "measure") {
+      state.draft.snap = !!state.snapEnabled && (!FEATURE_TTL || travelOf(state.draft) !== "air");
+    }
+    syncNavUi();
+    scheduleSaveUi();
+    updateStatus();
+  }
+
+  function setTravelMode(mode) {
+    if (!FEATURE_TTL) return;
+    state.travelMode = mode === "air" ? "air" : "surface";
+    if (state.draft?.type === "measure") {
+      state.draft.travel = state.travelMode;
+      state.draft.snap = !!state.snapEnabled && state.travelMode !== "air";
+    }
+    syncNavUi();
+    scheduleSaveUi();
+    updateStatus();
+  }
+
+  function setMeasureMode(mode) {
+    state.measureMode = mode === "route" ? "route" : "segment";
+    if (state.draft?.type === "measure") state.draft.mode = state.measureMode;
+    syncNavUi();
+    scheduleSaveUi();
+    updateStatus();
+  }
+
   function createToolbar() {
     const host = document.createElement("div");
     host.id = "con-intel-host";
@@ -1861,6 +2821,8 @@
           border-radius: 8px;
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
           user-select: none;
+          max-height: min(90vh, 740px);
+          overflow-y: auto;
         }
         .titlebar {
           display: flex;
@@ -1939,6 +2901,47 @@
         button.tool.eraser.active { background: #6a3214; border-color: #ffb070; color: #ffe0c2; }
         .range-opts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
         .range-opts .hint { color: #7f93a6; font-size: 10px; width: 100%; }
+        .exp-note {
+          width: 100%;
+          color: #e0b84a;
+          font-size: 10px;
+          line-height: 1.35;
+          border: 1px solid rgba(224, 184, 74, 0.45);
+          background: rgba(70, 52, 12, 0.45);
+          padding: 6px 7px;
+          border-radius: 4px;
+        }
+        .nav-opts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+        .nav-opts .hint { color: #7f93a6; font-size: 10px; width: 100%; }
+        .nav-opts label.speed {
+          width: 100%;
+          display: flex;
+          align-items: center;
+          gap: 6px;
+        }
+        .nav-opts input[type="number"] {
+          width: 64px;
+          padding: 3px 4px;
+          color: #e8eef5;
+          background: #142434;
+          border: 1px solid rgba(143, 212, 242, 0.35);
+          border-radius: 4px;
+          font: 11px Segoe UI, Tahoma, sans-serif;
+        }
+        .nav-opts details {
+          width: 100%;
+          color: #9fb3c4;
+          font-size: 10px;
+        }
+        .nav-opts summary { cursor: pointer; }
+        .terrain-grid {
+          display: grid;
+          grid-template-columns: 1fr 48px;
+          gap: 3px 6px;
+          margin-top: 6px;
+          align-items: center;
+        }
+        .terrain-grid input { width: 48px; }
         button {
           appearance: none;
           -webkit-appearance: none;
@@ -2068,6 +3071,31 @@
           <button id="con-intel-kind-sensors" class="tool" type="button" title="Radar and sight from a unit, no combat ring">Radar+Sight</button>
           <div class="hint">Combat size locks after place. Drag the center to move. Drag the hub on the ring to slide. Drag the R or S dots to resize radar and sight.</div>
         </div>
+        <div id="con-intel-nav-wrap" class="nav-opts" hidden>
+          <div class="exp-note">Experimental. Snap and route measure read the live CoN client. They can break when the game updates.</div>
+          <button id="con-intel-snap" class="tool" type="button" title="Snap Marker, Range origin, and Measure to the travel path">Snap</button>
+          <div id="con-intel-measure-extra" class="nav-opts" hidden>
+          <button id="con-intel-seg" class="tool active" type="button" title="Two-point straight or path measure">Segment</button>
+          <button id="con-intel-route" class="tool" type="button" title="Click waypoints and sum the route">Route</button>
+          ${
+            FEATURE_TTL
+              ? `<button id="con-intel-surface" class="tool active" type="button" title="TTL from map terrain (High Seas, Coastal, Open Ground, …)">Surface</button>
+          <button id="con-intel-air" class="tool" type="button" title="TTL from In Flight Speed Val for the whole line">Air</button>
+          <label class="speed">Speed multiplier <input id="con-intel-speed-mult" type="number" min="0.25" step="1" value="4" title="Army bar is always 1x. 4 adds real time in parentheses on a 4x map."></label>
+          <details>
+            <summary>Terrain Speed Val</summary>
+            <div class="terrain-grid">
+              ${TERRAIN_FIELDS.map(
+                (field) =>
+                  `<span>${field.label}</span><input id="con-intel-sv-${field.id}" type="number" min="0" step="0.05" placeholder="0" value="">`
+              ).join("")}
+            </div>
+          </details>
+          <div class="hint">Dev only. Enter Terrain Speed Val by hand from Unit Info. Speed val is per game tick. Army-bar hours ≈ km / (val × 51.44). The line shows that 1x time first. Multiplier 4 also shows real time in parentheses. Surface TTL walks the line: Urban while in the city, then Mountains / Open / etc. It does not fall back to a faster terrain. Fill every terrain the path actually uses. Air TTL uses In Flight only. Route: Alt-click waypoints, right-click to finish.</div>`
+              : `<div class="hint">Route: Alt-click waypoints, right-click to finish.</div>`
+          }
+          </div>
+        </div>
         <label class="note" id="con-intel-note-wrap" hidden>Note <textarea id="con-intel-label" rows="3" placeholder="optional, then Alt-click"></textarea></label>
         <div id="con-intel-palette" class="palette">
           ${PALETTE.map(
@@ -2124,6 +3152,26 @@
     ui("#con-intel-measure").onclick = () => setTool("measure");
     ui("#con-intel-kind-reach").onclick = () => setRangeKind("reach");
     ui("#con-intel-kind-sensors").onclick = () => setRangeKind("sensors");
+    ui("#con-intel-snap").onclick = () => setSnapEnabled(!state.snapEnabled);
+    ui("#con-intel-seg").onclick = () => setMeasureMode("segment");
+    ui("#con-intel-route").onclick = () => setMeasureMode("route");
+    if (FEATURE_TTL) {
+      ui("#con-intel-surface").onclick = () => setTravelMode("surface");
+      ui("#con-intel-air").onclick = () => setTravelMode("air");
+      ui("#con-intel-speed-mult").addEventListener("input", (event) => {
+        const n = Number(event.target.value);
+        if (Number.isFinite(n) && n > 0) state.speedMultiplier = n;
+        scheduleSaveUi();
+        updateStatus();
+      });
+      for (const field of TERRAIN_FIELDS) {
+        ui(`#con-intel-sv-${field.id}`)?.addEventListener("input", (event) => {
+          const n = Number(event.target.value);
+          if (Number.isFinite(n) && n > 0) state.speedVals[field.id] = n;
+          scheduleSaveUi();
+        });
+      }
+    }
     ui("#con-intel-eraser").onclick = () => setTool("eraser");
     ui("#con-intel-palette").addEventListener("click", (event) => {
       const swatch = event.target.closest(".swatch");
@@ -2133,6 +3181,14 @@
     const stopKeys = (event) => event.stopPropagation();
     ui("#con-intel-label").addEventListener("keydown", stopKeys);
     ui("#con-intel-label").addEventListener("keyup", stopKeys);
+    if (FEATURE_TTL) {
+      ui("#con-intel-speed-mult").addEventListener("keydown", stopKeys);
+      ui("#con-intel-speed-mult").addEventListener("keyup", stopKeys);
+      for (const field of TERRAIN_FIELDS) {
+        ui(`#con-intel-sv-${field.id}`)?.addEventListener("keydown", stopKeys);
+        ui(`#con-intel-sv-${field.id}`)?.addEventListener("keyup", stopKeys);
+      }
+    }
     ui("#con-intel-color").oninput = (e) => {
       setColor(e.target.value);
     };
@@ -2161,6 +3217,7 @@
     };
 
     applyPanelLayout();
+    syncNavUi();
     host.classList.add("no-motion");
     window.postMessage({ source: SOURCE, type: "load-ui" }, "*");
     requestAnimationFrame(() => host.classList.remove("no-motion"));
@@ -2234,6 +3291,23 @@
         if (Number.isFinite(Number(uiState.expandedTop))) state.expandedTop = Number(uiState.expandedTop);
         if (typeof uiState.dockCorner === "string") state.dockCorner = uiState.dockCorner;
         state.panelCollapsed = !!uiState.collapsed;
+        if (typeof uiState.snapEnabled === "boolean") state.snapEnabled = uiState.snapEnabled;
+        if (uiState.measureMode === "route" || uiState.measureMode === "segment") {
+          state.measureMode = uiState.measureMode;
+        }
+        if (uiState.travelMode === "air" || uiState.travelMode === "surface") {
+          state.travelMode = uiState.travelMode;
+        }
+        if (Number.isFinite(Number(uiState.speedMultiplier)) && Number(uiState.speedMultiplier) > 0) {
+          state.speedMultiplier = Number(uiState.speedMultiplier);
+        }
+        if (uiState.speedVals && typeof uiState.speedVals === "object") {
+          for (const field of TERRAIN_FIELDS) {
+            const n = Number(uiState.speedVals[field.id]);
+            if (Number.isFinite(n) && n > 0) state.speedVals[field.id] = n;
+          }
+        }
+        syncNavUi();
         state.toolbar?.classList.add("no-motion");
         if (state.panelCollapsed) {
           const corner =
@@ -2268,6 +3342,7 @@
     LOG("waiting for map API");
     const { api, container, canvas } = await waitForMap();
     LOG("map found", api.kind, canvas && canvas.width, canvas && canvas.height);
+    discoverPathApi();
     state.gameId = getGameId() || "unknown";
 
     const overlay = document.createElement("canvas");
