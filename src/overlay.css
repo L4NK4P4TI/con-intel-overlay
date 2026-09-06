@@ -84,4 +84,5 @@
 
 #con-intel-toolbar input[type="range"] {
   width: 90px;
+  cursor: ew-resize;
 }

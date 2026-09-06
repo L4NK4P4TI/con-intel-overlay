@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "1.2.1";
+  const VERSION = "1.2.2";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const FEATURE_TTL = false;
@@ -121,7 +121,9 @@
     saveTimer: 0,
     textEdit: null,
     textEditorHost: null,
+    textMove: null,
     hoverStrokeId: null,
+    hoverRangeMode: null,
     pointerScreen: null,
     altHeld: false,
     erasing: false,
@@ -1479,12 +1481,133 @@
     return state.tool === toolName && !!state.altHeld;
   }
 
+  let appliedMapCursor = null;
+  let appliedStickyCursor = null;
+
+  function eraserCursor(hot) {
+    const fill = hot ? "#ff8a1f" : "#8fd4f2";
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24"><path fill="${fill}" stroke="#101820" stroke-width="1.4" stroke-linejoin="round" d="M5 14.5 11 8.5a2 2 0 0 1 2.8 0L16.5 11.2 10.2 17.5H7.2z"/><path fill="none" stroke="#101820" stroke-width="1.4" d="M8 17.5h11"/></svg>`;
+    return `url("data:image/svg+xml,${encodeURIComponent(svg)}") 4 18, cell`;
+  }
+
+  function resizeCursorForDelta(dx, dy) {
+    if (!Number.isFinite(dx) || !Number.isFinite(dy) || (dx === 0 && dy === 0)) return "nwse-resize";
+    const deg = (((Math.atan2(dy, dx) * 180) / Math.PI) + 360) % 360;
+    const sector = Math.round(deg / 45) % 8;
+    return ["ew-resize", "nwse-resize", "ns-resize", "nesw-resize", "ew-resize", "nwse-resize", "ns-resize", "nesw-resize"][
+      sector
+    ];
+  }
+
+  function nearestRangeCopy(stroke, screen, canvas) {
+    if (!stroke || !screen || !canvas) return null;
+    let best = null;
+    let bestDist = Infinity;
+    for (const copy of rangeCopies(stroke, canvas)) {
+      const d = Math.hypot(screen.x - copy.probe.x, screen.y - copy.probe.y);
+      if (d < bestDist) {
+        best = copy;
+        bestDist = d;
+      }
+    }
+    return best;
+  }
+
+  function strokeFromHit(hit) {
+    if (!hit) return null;
+    const at = state.strokes[hit.index];
+    if (at && at.id === hit.id) return at;
+    return state.strokes.find((item) => item.id === hit.id) || null;
+  }
+
+  function cursorForRangeMode(mode, stroke, screen, canvas) {
+    if (mode === "move" || mode === "orbit") return "move";
+    const copy = nearestRangeCopy(stroke, screen, canvas);
+    if (!copy) return "nwse-resize";
+    const center = mode === "combat" ? copy.origin : copy.probe;
+    return resizeCursorForDelta(screen.x - center.x, screen.y - center.y);
+  }
+
+  function applyMapCursor(value, sticky) {
+    const next = value || "";
+    const stick = sticky && next ? next : "";
+    if (appliedMapCursor === next && appliedStickyCursor === stick) return;
+    appliedMapCursor = next;
+    appliedStickyCursor = stick;
+    const api = getMapApi();
+    const container = api?.getContainer();
+    const canvas = api?.getCanvas();
+    if (container) container.style.cursor = next;
+    if (canvas && canvas !== container) canvas.style.cursor = next;
+    document.documentElement.style.cursor = stick;
+  }
+
+  function mapCursorForState() {
+    const surface = state.overlay || getMapApi()?.getCanvas();
+    const screen = state.pointerScreen;
+
+    if (state.rangeEdit && screen && surface) {
+      const stroke = state.strokes.find((item) => item.id === state.rangeEdit.id);
+      const cursor =
+        state.rangeEdit.mode === "move" || state.rangeEdit.mode === "orbit"
+          ? "grabbing"
+          : cursorForRangeMode(state.rangeEdit.mode, stroke, screen, surface);
+      return { cursor, sticky: true };
+    }
+    if (state.measureEdit || state.textMove) {
+      return { cursor: "grabbing", sticky: true };
+    }
+    if (state.erasing) {
+      return { cursor: eraserCursor(true), sticky: true };
+    }
+    if (state.draft) {
+      if (state.draft.type === "range" && screen && surface) {
+        const layout = rangeLayout(state.draft);
+        const origin = fromMap(layout.origin);
+        return { cursor: resizeCursorForDelta(screen.x - origin.x, screen.y - origin.y), sticky: true };
+      }
+      if (state.draft.type === "text") return { cursor: "text", sticky: false };
+      return { cursor: "crosshair", sticky: true };
+    }
+    if (state.textEdit) return { cursor: "text", sticky: false };
+    if (!state.altHeld) return { cursor: "", sticky: false };
+    if (!screen || !surface) return { cursor: "crosshair", sticky: false };
+
+    if (state.tool === "eraser") {
+      const hot = findStrokeIndexAt(screen, surface) >= 0;
+      return { cursor: eraserCursor(hot), sticky: false };
+    }
+    if (state.tool === "text") {
+      const hit = findTextHit(screen, surface);
+      if (hit?.mode === "move") return { cursor: "move", sticky: false };
+      return { cursor: "text", sticky: false };
+    }
+    if (state.tool === "range") {
+      const handle = findRangeHandle(screen, surface);
+      if (handle) {
+        return {
+          cursor: cursorForRangeMode(handle.mode, strokeFromHit(handle), screen, surface),
+          sticky: false,
+        };
+      }
+      return { cursor: "crosshair", sticky: false };
+    }
+    if (state.tool === "measure" || state.tool === "arrow") {
+      const handle = state.tool === "measure" ? findMeasureHandle(screen, surface) : findArrowHandle(screen, surface);
+      if (handle) return { cursor: handle.mode === "move" ? "move" : "grab", sticky: false };
+      return { cursor: "crosshair", sticky: false };
+    }
+    return { cursor: "crosshair", sticky: false };
+  }
+
+  function syncMapCursor() {
+    const { cursor, sticky } = mapCursorForState();
+    applyMapCursor(cursor, sticky || false);
+  }
+
   function setAltHeld(on) {
-    const next = !!on;
-    if (state.altHeld === next) return;
-    state.altHeld = next;
-    const container = getMapApi()?.getContainer();
-    if (container) container.style.cursor = next ? "crosshair" : "";
+    state.altHeld = !!on;
+    syncMapCursor();
   }
 
   function rotPt(x, y, angle, ox, oy) {
@@ -1773,6 +1896,25 @@
     else stroke.sightRadius = radius;
   }
 
+  function setCombatRadius(stroke, mapPos) {
+    const origin = stroke.points[0];
+    if (!origin || stroke.kind === "sensors") return;
+    const radius = Math.max(1, Math.hypot(mapPos.x - origin.x, mapPos.y - origin.y));
+    stroke.combatRadius = radius;
+    clampReachHub(stroke);
+  }
+
+  function angleDelta(a, b) {
+    let d = Math.abs(a - b) % (Math.PI * 2);
+    if (d > Math.PI) d = Math.PI * 2 - d;
+    return d;
+  }
+
+  function spokePadAngle(radius, pad) {
+    const r = Math.max(radius, 1);
+    return Math.max(0.18, Math.min(Math.PI / 4, (pad + 22) / r));
+  }
+
   function wrapOffsets() {
     const width = getMapApi()?.wrapWidth() || 0;
     return width ? [0, width, -width] : [0];
@@ -1941,6 +2083,12 @@
         ctx.restore();
       }
     }
+    if (showHandles && layout.kind === "reach" && layout.combatRadius > 1) {
+      ctx.save();
+      ctx.strokeStyle = "rgba(255, 224, 130, 0.85)";
+      strokeMapCircle(ctx, layout.origin, layout.combatRadius, canvas, [6, 4], 0.9);
+      ctx.restore();
+    }
   }
 
   function rangeHitKind(stroke, screen, canvas) {
@@ -1953,13 +2101,41 @@
         bestDist = dist;
       }
     };
-    for (const copy of rangeCopies(stroke, canvas)) {
+    const copies = rangeCopies(stroke, canvas);
+    for (const copy of copies) {
       consider("sight", Math.hypot(copy.sightHandle.x - screen.x, copy.sightHandle.y - screen.y), pad + 2);
       consider("radar", Math.hypot(copy.radarHandle.x - screen.x, copy.radarHandle.y - screen.y), pad + 2);
       if (copy.kind === "reach") {
         consider("orbit", Math.hypot(copy.probe.x - screen.x, copy.probe.y - screen.y), pad + 4);
       }
       consider("move", Math.hypot(copy.origin.x - screen.x, copy.origin.y - screen.y), pad + 6);
+    }
+    if (best) return best;
+
+    for (const copy of copies) {
+      const dProbe = Math.hypot(screen.x - copy.probe.x, screen.y - copy.probe.y);
+      const dOrigin = Math.hypot(screen.x - copy.origin.x, screen.y - copy.origin.y);
+      const radarRes = copy.radarR > 4 ? Math.abs(dProbe - copy.radarR) : Infinity;
+      const sightRes = copy.sightR > 4 ? Math.abs(dProbe - copy.sightR) : Infinity;
+      const combatRes =
+        copy.kind === "reach" && copy.combatR > 4 ? Math.abs(dOrigin - copy.combatR) : Infinity;
+      const radarHit = radarRes <= pad;
+      const sightHit = sightRes <= pad;
+      const combatHit = combatRes <= pad;
+      const spoke = Math.atan2(copy.radarHandle.y - copy.probe.y, copy.radarHandle.x - copy.probe.x);
+      const ang = Math.atan2(screen.y - copy.probe.y, screen.x - copy.probe.x);
+      const onSightSpoke = sightHit && angleDelta(ang, spoke) <= spokePadAngle(copy.sightR, pad);
+      const onRadarSpoke = radarHit && angleDelta(ang, spoke) <= spokePadAngle(copy.radarR, pad);
+
+      if (combatHit && (sightHit || radarHit)) {
+        if (onSightSpoke && sightRes <= radarRes + 0.5) consider("sight", sightRes, pad);
+        else if (onRadarSpoke) consider("radar", radarRes, pad);
+        else consider("combat", combatRes, pad);
+      } else {
+        if (sightHit) consider("sight", sightRes, pad);
+        if (radarHit) consider("radar", radarRes, pad);
+        if (combatHit) consider("combat", combatRes, pad);
+      }
     }
     return best;
   }
@@ -2253,6 +2429,43 @@
     return boxes;
   }
 
+  function textHitKind(stroke, screen, canvas, ctx) {
+    if (!stroke?.points?.[0] || !ctx) return null;
+    const size = 12 + stroke.width * 2;
+    ctx.save();
+    ctx.font = `700 ${size}px Segoe UI, Tahoma, sans-serif`;
+    const lines = wrapTextLines(ctx, stroke.label || "", 280);
+    const lineH = size + 3;
+    const pinR = 8 + stroke.width + 6;
+    let kind = null;
+    for (const p of screenPoints(stroke.points[0], canvas)) {
+      if (Math.hypot(p.x - screen.x, p.y - screen.y) <= pinR) kind = kind || "move";
+      lines.forEach((line, i) => {
+        const w = Math.max(16, ctx.measureText(line || " ").width + 6);
+        const box = {
+          x: p.x + 6,
+          y: p.y - 8 - (lines.length - 1 - i) * lineH - size,
+          w,
+          h: lineH + 4,
+        };
+        if (pointInBox(screen, box)) kind = kind || "edit";
+      });
+    }
+    ctx.restore();
+    return kind;
+  }
+
+  function findTextHit(screen, canvas) {
+    if (!screen || !canvas || !state.ctx) return null;
+    for (let i = state.strokes.length - 1; i >= 0; i -= 1) {
+      const stroke = state.strokes[i];
+      if (stroke.type !== "text") continue;
+      const mode = textHitKind(stroke, screen, canvas, state.ctx);
+      if (mode) return { index: i, id: stroke.id, mode };
+    }
+    return null;
+  }
+
   function strokeHits(stroke, screen, canvas, ctx) {
     if (!stroke?.points?.length) return false;
     const pad = Math.max(12, (stroke.width || 3) + 8);
@@ -2334,19 +2547,32 @@
       state.hoverStrokeId = state.measureEdit.id;
     } else if (state.rangeEdit) {
       state.hoverStrokeId = state.rangeEdit.id;
+      state.hoverRangeMode = state.rangeEdit.mode;
+    } else if (state.textMove) {
+      state.hoverStrokeId = state.textMove.id;
+    } else if (state.textEdit?.id) {
+      state.hoverStrokeId = state.textEdit.id;
     } else if (state.tool === "eraser" && state.pointerScreen) {
       const idx = findStrokeIndexAt(state.pointerScreen, overlay);
       state.hoverStrokeId = idx >= 0 ? state.strokes[idx].id : null;
+    } else if (state.tool === "text" && state.altHeld && state.pointerScreen && !state.draft) {
+      state.hoverStrokeId = findTextHit(state.pointerScreen, overlay)?.id || null;
     } else if (state.tool === "range" && state.altHeld && state.pointerScreen && !state.draft) {
-      state.hoverStrokeId = findRangeHandle(state.pointerScreen, overlay)?.id || null;
+      const handle = findRangeHandle(state.pointerScreen, overlay);
+      state.hoverStrokeId = handle?.id || null;
+      state.hoverRangeMode = handle?.mode || null;
     } else if (state.tool === "measure" && state.altHeld && state.pointerScreen && !state.draft) {
       state.hoverStrokeId = findMeasureHandle(state.pointerScreen, overlay)?.id || null;
     } else if (state.tool === "arrow" && state.altHeld && state.pointerScreen && !state.draft) {
       state.hoverStrokeId = findArrowHandle(state.pointerScreen, overlay)?.id || null;
     } else if (state.tool !== "eraser") {
       state.hoverStrokeId = null;
+      state.hoverRangeMode = null;
     }
+    if (state.tool !== "range" && !state.rangeEdit) state.hoverRangeMode = null;
+    syncMapCursor();
     for (const stroke of state.strokes) {
+      if (state.textEdit?.id && stroke.id === state.textEdit.id) continue;
       if (stroke.id === state.hoverStrokeId) {
         ctx.save();
         ctx.shadowColor = "rgba(255, 224, 130, 0.95)";
@@ -2467,7 +2693,25 @@
     updateStatus();
   }
 
-  function beginTextEdit(mapPos) {
+  function beginTextEdit(mapPos, existing) {
+    if (existing) {
+      cancelTextEdit();
+      state.textEdit = {
+        mapPos: { x: existing.points[0].x, y: existing.points[0].y },
+        value: existing.label || "",
+        id: existing.id,
+      };
+      ensureTextEditor();
+      const input = state.textEditorHost.shadowRoot.querySelector("textarea");
+      input.value = existing.label || "";
+      input.style.height = "";
+      syncTextEditor();
+      setTimeout(() => {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      }, 0);
+      return;
+    }
     const preset = ui("#con-intel-label")?.value?.trim() || "";
     if (preset) {
       state.strokes.push({
@@ -2495,7 +2739,18 @@
   function commitTextEdit() {
     if (!state.textEdit) return;
     const label = state.textEdit.value.trim();
-    if (label) {
+    if (state.textEdit.id) {
+      const idx = state.strokes.findIndex((item) => item.id === state.textEdit.id);
+      if (idx >= 0) {
+        if (label) {
+          state.strokes[idx].label = label;
+          state.strokes[idx].points[0] = { x: state.textEdit.mapPos.x, y: state.textEdit.mapPos.y };
+        } else {
+          state.strokes.splice(idx, 1);
+        }
+        scheduleSave();
+      }
+    } else if (label) {
       state.strokes.push({
         id: uid(),
         type: "text",
@@ -2671,11 +2926,17 @@
     };
 
     const onDown = (event) => {
-      setAltHeld(event.altKey);
-      if (isOnToolbar(event)) return;
+      state.altHeld = !!event.altKey;
+      if (isOnToolbar(event)) {
+        syncMapCursor();
+        return;
+      }
       if (state.textEdit && overMap(event)) {
         commitTextEdit();
-        if (!isDrawChord(event)) return;
+        if (!isDrawChord(event)) {
+          syncMapCursor();
+          return;
+        }
       }
       if (!overMap(event)) return;
       if (state.draft) {
@@ -2697,7 +2958,10 @@
         eat(event);
         return;
       }
-      if (!isDrawChord(event)) return;
+      if (!isDrawChord(event)) {
+        syncMapCursor();
+        return;
+      }
       eat(event);
       const surface = drawCanvas();
       if (!surface) return;
@@ -2706,15 +2970,32 @@
       if (state.tool === "marker") {
         startDraft(mapPos);
         finishDraft();
+        syncMapCursor();
         return;
       }
       if (state.tool === "text") {
+        const hit = findTextHit(eventToScreen(event, surface), surface);
+        if (hit) {
+          const stroke = state.strokes[hit.index];
+          state.textMove = {
+            id: stroke.id,
+            mode: hit.mode,
+            grab: mapPos,
+            start: { x: stroke.points[0].x, y: stroke.points[0].y },
+            moved: false,
+          };
+          state.hoverStrokeId = stroke.id;
+          syncMapCursor();
+          return;
+        }
         beginTextEdit(mapPos);
+        syncMapCursor();
         return;
       }
       if (state.tool === "eraser") {
         state.erasing = true;
         eraseAtScreen(eventToScreen(event, surface));
+        syncMapCursor();
         return;
       }
       if (state.tool === "range") {
@@ -2729,10 +3010,14 @@
             sightRadius: stroke.sightRadius,
           };
           state.hoverStrokeId = stroke.id;
+          syncMapCursor();
           return;
         }
         const overRange = findStrokeIndexAt(eventToScreen(event, surface), surface);
-        if (overRange >= 0 && state.strokes[overRange].type === "range") return;
+        if (overRange >= 0 && state.strokes[overRange].type === "range") {
+          syncMapCursor();
+          return;
+        }
       }
       if (state.tool === "measure" || state.tool === "arrow") {
         const handle =
@@ -2750,23 +3035,40 @@
             strokeType: stroke.type,
           };
           state.hoverStrokeId = stroke.id;
+          syncMapCursor();
           return;
         }
       }
       startDraft(mapPos);
+      syncMapCursor();
     };
 
     const onMove = (event) => {
-      setAltHeld(event.altKey);
+      state.altHeld = !!event.altKey;
       const surface = drawCanvas();
       if (surface && overMap(event) && !isOnToolbar(event)) {
         state.pointerScreen = eventToScreen(event, surface);
-      } else if (!state.erasing) {
+      } else if (!state.erasing && !state.rangeEdit && !state.measureEdit && !state.textMove && !state.draft) {
         state.pointerScreen = null;
       }
       if (state.tool === "eraser" && state.erasing) {
         eat(event);
         if (surface) eraseAtScreen(eventToScreen(event, surface));
+        syncMapCursor();
+        return;
+      }
+      if (state.textMove) {
+        eat(event);
+        if (!surface) return;
+        const stroke = state.strokes.find((item) => item.id === state.textMove.id);
+        if (!stroke) return;
+        const mapPos = pointerMapPos(event, surface);
+        if (mapSeparation(mapPos, state.textMove.grab) >= 2) state.textMove.moved = true;
+        const dx = mapPos.x - state.textMove.grab.x;
+        const dy = mapPos.y - state.textMove.grab.y;
+        stroke.points[0] = { x: state.textMove.start.x + dx, y: state.textMove.start.y + dy };
+        scheduleSave();
+        syncMapCursor();
         return;
       }
       if (state.rangeEdit) {
@@ -2779,7 +3081,9 @@
         else if (state.rangeEdit.mode === "orbit") setRangeProbe(stroke, mapPos);
         else if (state.rangeEdit.mode === "radar") setSensorRadius(stroke, "radar", mapPos);
         else if (state.rangeEdit.mode === "sight") setSensorRadius(stroke, "sight", mapPos);
+        else if (state.rangeEdit.mode === "combat") setCombatRadius(stroke, mapPos);
         scheduleSave();
+        syncMapCursor();
         return;
       }
       if (state.measureEdit) {
@@ -2799,9 +3103,13 @@
           stroke.points = state.measureEdit.start.map((p) => ({ x: p.x + dx, y: p.y + dy }));
         }
         scheduleSave();
+        syncMapCursor();
         return;
       }
-      if (!state.draft || state.draft.type === "text") return;
+      if (!state.draft || state.draft.type === "text") {
+        syncMapCursor();
+        return;
+      }
       eat(event);
       if (!surface) return;
       const mapPos = pointerMapPos(event, surface);
@@ -2809,6 +3117,7 @@
         const raw = toMap(eventToScreen(event, surface));
         if (state.draft.kind === "sensors") applySensorsFromDrag(state.draft, raw);
         else applyReachFromDrag(state.draft, raw);
+        syncMapCursor();
         return;
       }
       if (state.draft.type === "measure" || state.draft.type === "arrow") {
@@ -2817,9 +3126,11 @@
         } else {
           state.draft.points = [state.draft.points[0], mapPos];
         }
+        syncMapCursor();
         return;
       }
       state.draft.points.push(mapPos);
+      syncMapCursor();
     };
 
     const onUp = (event) => {
@@ -2830,12 +3141,24 @@
       if (state.erasing) {
         state.erasing = false;
         eat(event);
+        syncMapCursor();
+        return;
+      }
+      if (state.textMove) {
+        const edit = state.textMove;
+        const stroke = state.strokes.find((item) => item.id === edit.id);
+        state.textMove = null;
+        eat(event);
+        if (stroke && !edit.moved) beginTextEdit(stroke.points[0], stroke);
+        else scheduleSave();
+        syncMapCursor();
         return;
       }
       if (state.rangeEdit) {
         state.rangeEdit = null;
         eat(event);
         scheduleSave();
+        syncMapCursor();
         return;
       }
       if (state.measureEdit) {
@@ -2855,15 +3178,21 @@
         state.measureEdit = null;
         eat(event);
         scheduleSave();
+        syncMapCursor();
         return;
       }
-      if (!state.draft || state.draft.type === "text") return;
+      if (!state.draft || state.draft.type === "text") {
+        syncMapCursor();
+        return;
+      }
       if (isRouteDraft(state.draft)) {
         eat(event);
+        syncMapCursor();
         return;
       }
       eat(event);
       finishDraft();
+      syncMapCursor();
     };
 
     const opts = { capture: true, passive: false };
@@ -2914,6 +3243,7 @@
     closeStyleMenus();
     updateStatus();
     applyPanelLayout();
+    syncMapCursor();
   }
 
   function setRangeKind(kind) {
@@ -2972,7 +3302,7 @@
         : state.tool === "measure"
           ? state.draft?.mode === "route" || state.measureMode === "route"
             ? "Alt-click waypoints · right-click to finish"
-            : "Alt-drag to measure km"
+            : "Alt-drag to measure km · drag ends or the line to edit"
           : state.tool === "arrow"
             ? state.draft?.mode === "route" || state.arrowMode === "route"
               ? "Alt-click waypoints · right-click to finish · Alt-click a tip to cycle that head"
@@ -2980,11 +3310,11 @@
           : state.tool === "range"
           ? state.rangeKind === "sensors"
             ? "Alt-drag radar size · origin moves · R/S dots resize"
-            : "Alt-drag combat size (locks) · origin moves · hub stays inside combat · R/S resize"
+            : "Alt-drag combat size · drag the ring to resize · R/S dots or their spoke to resize sensors"
           : state.tool === "marker"
             ? "Pick an icon · Alt-click to stamp"
           : state.tool === "text"
-            ? "Hold Alt + click"
+            ? "Alt-click to type · Alt-click a note to edit · drag the pin to move"
             : "Hold Alt + drag";
     el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}`;
   }
@@ -3381,6 +3711,7 @@
           touch-action: none;
           user-select: none;
         }
+        .fab:active { cursor: grabbing; }
         .panel, .fab {
           pointer-events: auto;
           transform-origin: var(--dock-origin, 0% 100%);
@@ -3616,7 +3947,7 @@
           background: transparent;
           cursor: pointer;
         }
-        input[type="range"] { width: 90px; }
+        input[type="range"] { width: 90px; cursor: ew-resize; }
         textarea {
           width: 100%;
           min-height: 56px;
@@ -3628,6 +3959,7 @@
           font: 12px/1.35 Segoe UI, Tahoma, sans-serif;
           resize: vertical;
           white-space: pre-wrap;
+          cursor: text;
         }
         label.note {
           flex-direction: column;
@@ -3690,7 +4022,7 @@
         <div id="con-intel-range-wrap" class="range-opts" hidden>
           <button id="con-intel-kind-reach" class="tool active" type="button" title="Combat range plus radar and sight; hub stays inside combat">Reach</button>
           <button id="con-intel-kind-sensors" class="tool" type="button" title="Radar and sight from a unit, no combat ring">Radar+Sight</button>
-          <div class="hint">Combat size locks after place. Drag the center to move. Drag the hub (center of radar/sight) anywhere inside combat — the hub cannot leave that ring. Radar and sight may extend past it. Drag the R or S dots to resize.</div>
+          <div class="hint">Drag the combat ring to resize it. When radar or sight sits on that same ring, drag the R/S dots (or the short arc toward them) to resize sensors — the rest of the ring still resizes combat. Drag the center to move. Drag the hub anywhere inside combat; radar and sight may extend past it.</div>
         </div>
         <div id="con-intel-nav-wrap" class="nav-opts" hidden>
           <div id="con-intel-measure-extra" class="nav-opts" hidden>
@@ -3926,12 +4258,14 @@
       if (fromTypingField(event)) return;
       if (event.target && event.target.closest && event.target.closest("#con-intel-host")) return;
       if (event.key === "Escape") closeStyleMenus();
-      if (event.key === "Escape" && (state.draft || state.textEdit || state.rangeEdit || state.measureEdit)) {
+      if (event.key === "Escape" && (state.draft || state.textEdit || state.rangeEdit || state.measureEdit || state.textMove)) {
         state.draft = null;
         state.rangeEdit = null;
         state.measureEdit = null;
+        state.textMove = null;
         cancelTextEdit();
         updateStatus();
+        syncMapCursor();
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         state.strokes.pop();
