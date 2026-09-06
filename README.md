@@ -13,11 +13,9 @@ Marks are stored in map coordinates, so they stay on the terrain when you pan or
 
 ![Demo of the overlay](media/overlay-preview.gif)
 
-[Watch the full demo](https://github.com/L4NK4P4TI/con-intel-overlay/blob/main/media/overlay-demo.mp4)
+[Watch the full-quality demo](https://github.com/L4NK4P4TI/con-intel-overlay/blob/main/media/overlay-demo.mp4)
 
-GitHub cannot play a repo `.mp4` inside the README, so the clip above is an animated preview. The link opens the full video in GitHub’s player.
-
-Captures are from an earlier build. Drop newer files in `media/` when you have them.
+GitHub cannot play a repo `.mp4` inside the README, so the clip above is an animated version of the same recording.
 
 ## Install
 
