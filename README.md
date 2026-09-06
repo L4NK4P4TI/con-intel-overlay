@@ -9,6 +9,12 @@ The overlay works on both clients:
 
 Marks are stored in map coordinates, so they stay on the terrain when you pan or zoom. The overlay uses `pointer-events: none` so the game keeps pan, zoom, and orders.
 
+![CoN Intel Overlay on a match](media/overlay.png)
+
+![Demo of the overlay](media/overlay-demo.mp4)
+
+Captures are from an earlier build. Drop newer screenshot and video files in `media/` when you have them.
+
 ## Install
 
 Sideload from this repo: [github.com/L4NK4P4TI/con-intel-overlay](https://github.com/L4NK4P4TI/con-intel-overlay)
