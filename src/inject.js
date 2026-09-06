@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "1.2.7";
+  const VERSION = "1.3.0";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const FEATURE_TTL = false;

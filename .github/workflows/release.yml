@@ -1,12 +1,19 @@
 name: Release
 
-# Publishes a GitHub release only when major or minor bumps (M.m.x).
-# Patch/bugfix bumps (the third number) do not create a release.
+# Publishes a GitHub release for major or minor bumps (M.m.x).
+# Patch/bugfix bumps are skipped unless bypassed:
+#   - commit message contains [critical] or [release]
+#   - or workflow_dispatch with "critical" checked
 
 on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      critical:
+        description: Publish even for a patch/bugfix (critical fix)
+        type: boolean
+        default: false
 
 concurrency:
   group: github-release
@@ -30,6 +37,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           BEFORE_SHA: ${{ github.event.before }}
+          DISPATCH_CRITICAL: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.critical == 'true' }}
         run: |
           function Parse-Ver([string]$raw) {
             if (-not $raw) { return $null }
@@ -67,13 +75,23 @@ jobs:
             $majorMinorChanged = $current.patch -eq 0
           }
 
-          $publish = (-not $exists) -and $majorMinorChanged
+          $dispatchCritical = $env:DISPATCH_CRITICAL -eq "true"
+          $commitRange = if ($env:BEFORE_SHA -and $env:BEFORE_SHA -notmatch '^0+$') {
+            "$($env:BEFORE_SHA)..HEAD"
+          } else {
+            "-1"
+          }
+          $commitMsgs = git log --format=%B $commitRange 2>$null
+          $commitCritical = [bool]($commitMsgs -match '\[(critical|release)\]')
+
+          $bypass = $dispatchCritical -or $commitCritical
+          $publish = (-not $exists) -and ($majorMinorChanged -or $bypass)
           "version=$($current.text)" | Add-Content $env:GITHUB_OUTPUT
           "publish=$($publish.ToString().ToLower())" | Add-Content $env:GITHUB_OUTPUT
 
-          Write-Host "Current $($current.text); baseline $($baseline.text); exists $exists; major/minor changed $majorMinorChanged; publish $publish"
+          Write-Host "Current $($current.text); baseline $($baseline.text); exists $exists; major/minor changed $majorMinorChanged; bypass $bypass; publish $publish"
           if (-not $publish -and -not $exists -and -not $majorMinorChanged) {
-            Write-Host "Skipping patch/bugfix $($current.text). Releases run for major or minor only."
+            Write-Host "Skipping patch/bugfix $($current.text). Use [critical] in the commit, or Run workflow with Critical checked."
           }
 
       - name: Pack zip

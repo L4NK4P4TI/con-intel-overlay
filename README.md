@@ -27,7 +27,7 @@ Sideload from this repo: [github.com/L4NK4P4TI/con-intel-overlay](https://github
 4. Select this folder
 5. Open a match on [conflictnations.com](https://www.conflictnations.com/) and **refresh** the tab after reloading the extension.
 
-The toolbar shows the version, e.g. `Intel overlay v1.2.7`, plus `modern` or `legacy`. If you do not see that number, Chrome still has an old build loaded.
+The toolbar shows the version, e.g. `Intel overlay v1.3.0`, plus `modern` or `legacy`. If you do not see that number, Chrome still has an old build loaded.
 
 A panel labeled **Intel overlay** appears on the map.
 
@@ -54,7 +54,7 @@ Strokes are saved per match in `chrome.storage.local`.
 
 ## Chrome Web Store
 
-Listing copy, original icons, and a pack script live in `store/`. Run `.\store\pack.ps1` to build `dist/con-intel-overlay-1.2.7.zip`. See `store/LISTING.md`.
+Listing copy, original icons, and a pack script live in `store/`. Run `.\store\pack.ps1` to build `dist/con-intel-overlay-1.3.0.zip`. See `store/LISTING.md`.
 
 ## How it stays geo-locked
 
