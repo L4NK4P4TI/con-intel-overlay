@@ -1,8 +1,27 @@
 (() => {
-  const VERSION = "1.1.19";
+  const VERSION = "1.2.0";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const FEATURE_TTL = false;
+  const LINE_STYLES = [
+    { id: "solid", label: "Solid", dash: [] },
+    { id: "dash", label: "Dash", dash: [9, 6] },
+    { id: "dot", label: "Dot", dash: [2.2, 5] },
+    { id: "dashdot", label: "Dash-dot", dash: [10, 5, 2.2, 5] },
+  ];
+  const HEAD_STYLES = [
+    { id: "none", label: "None" },
+    { id: "arrow", label: "Arrow" },
+    { id: "stealth", label: "Stealth" },
+    { id: "diamond", label: "Diamond" },
+    { id: "oval", label: "Oval" },
+  ];
+  const HEAD_PRESETS = [
+    { id: "none", label: "No arrows", start: "none", end: "none" },
+    { id: "end", label: "End arrow", start: "none", end: "arrow" },
+    { id: "start", label: "Start arrow", start: "arrow", end: "none" },
+    { id: "both", label: "Both arrows", start: "arrow", end: "arrow" },
+  ];
   const WRAP_MARGIN = 240;
   const PALETTE = [
     "#ff4d4d",
@@ -51,12 +70,16 @@
     textEditorHost: null,
     hoverStrokeId: null,
     pointerScreen: null,
+    altHeld: false,
     erasing: false,
     rangeKind: "reach",
     rangeEdit: null,
     measureEdit: null,
-    snapEnabled: false,
     measureMode: "segment",
+    arrowMode: "segment",
+    arrowHeadStart: "none",
+    arrowHeadEnd: "arrow",
+    lineStyle: "solid",
     travelMode: "surface",
     speedMultiplier: 4,
     speedVals: {
@@ -594,32 +617,13 @@
     return null;
   }
 
-  function snapMapPos(mapPos) {
-    if (!mapPos || !state.snapEnabled) return mapPos;
-    const api = discoverPathApi();
-    for (const fn of api.snapFns || []) {
-      try {
-        const snapped = asMapPoint(fn(mapPos)) || asMapPoint(fn(mapPos.x, mapPos.y));
-        if (snapped) {
-          api.snap = fn;
-          return snapped;
-        }
-      } catch (_err) {
-        /* next */
-      }
-    }
-    const center = provinceCenter(provinceRecord(mapPos)) || nearestNetworkPoint(mapPos);
-    return center || mapPos;
-  }
-
   function pointerMapPos(event, surface) {
-    return snapMapPos(toMap(eventToScreen(event, surface)));
+    return toMap(eventToScreen(event, surface));
   }
 
-  function travelPath(a, b, useSnap) {
+  function travelPath(a, b, followNetwork) {
     if (!a || !b) return a && b ? [a, b] : [];
-    const snapOn = useSnap != null ? !!useSnap : state.snapEnabled;
-    if (!snapOn) return [a, b];
+    if (!followNetwork) return [a, b];
     const api = discoverPathApi();
     const key = `${Math.round(a.x)}:${Math.round(a.y)}>${Math.round(b.x)}:${Math.round(b.y)}`;
     if (travelPathCache.has(key)) return travelPathCache.get(key);
@@ -645,9 +649,9 @@
     return copy.map((p) => ({ x: p.x, y: p.y, terrain: p.terrain || null }));
   }
 
-  function densifyWaypoints(points, useSnap) {
+  function densifyWaypoints(points, followNetwork) {
     if (!points || points.length < 2) return points || [];
-    if (!useSnap) return points.map((p) => ({ x: p.x, y: p.y, terrain: p.terrain || null }));
+    if (!followNetwork) return points.map((p) => ({ x: p.x, y: p.y, terrain: p.terrain || null }));
     const out = [];
     for (let i = 1; i < points.length; i += 1) {
       const raw = travelPath(points[i - 1], points[i], true);
@@ -850,9 +854,10 @@
   function measurePoly(stroke) {
     const pts = stroke?.points;
     if (!pts || pts.length < 2) return pts || [];
-    const follow =
-      !!stroke.snap || (FEATURE_TTL && travelOf(stroke) === "surface");
-    return densifyWaypoints(pts, follow);
+    if (FEATURE_TTL && stroke.type === "measure" && travelOf(stroke) === "surface") {
+      return densifyWaypoints(pts, true);
+    }
+    return pts;
   }
 
   function polylineKm(points) {
@@ -1127,8 +1132,11 @@
             expandedLeft: state.expandedLeft,
             expandedTop: state.expandedTop,
             dockCorner: state.dockCorner,
-            snapEnabled: state.snapEnabled,
             measureMode: state.measureMode,
+            arrowMode: state.arrowMode,
+            arrowHeadStart: normalizeHeadStyle(state.arrowHeadStart, "none"),
+            arrowHeadEnd: normalizeHeadStyle(state.arrowHeadEnd, "arrow"),
+            lineStyle: normalizeLineStyle(state.lineStyle),
             travelMode: state.travelMode,
             speedMultiplier: state.speedMultiplier,
             speedVals: { ...state.speedVals },
@@ -1200,11 +1208,18 @@
         stroke.radarRadius = radarRadius;
         stroke.sightRadius = sightRadius;
       }
+      if (item.type === "arrow") {
+        if (points.length < 2) continue;
+        stroke.points = points.slice(0, item.mode === "route" ? 80 : 2);
+        stroke.mode = item.mode === "route" ? "route" : "segment";
+        stroke.headStart = normalizeHeadStyle(item.headStart, "none");
+        stroke.headEnd = normalizeHeadStyle(item.headEnd, "arrow");
+        stroke.lineStyle = normalizeLineStyle(item.lineStyle);
+      }
       if (item.type === "measure") {
         if (points.length < 2) continue;
         stroke.points = points.slice(0, item.mode === "route" ? 80 : 2);
         stroke.mode = item.mode === "route" ? "route" : "segment";
-        stroke.snap = !!item.snap;
         stroke.travel = item.travel === "air" ? "air" : "surface";
       }
       out.push(stroke);
@@ -1296,20 +1311,200 @@
     reader.readAsText(file);
   }
 
-  function drawArrowhead(ctx, from, to, size) {
+  function normalizeLineStyle(raw) {
+    const id = String(raw || "solid");
+    return LINE_STYLES.some((row) => row.id === id) ? id : "solid";
+  }
+
+  function lineDashFor(style) {
+    const row = LINE_STYLES.find((item) => item.id === normalizeLineStyle(style));
+    return row ? row.dash : [];
+  }
+
+  function normalizeHeadStyle(raw, fallback) {
+    if (raw === true) return "arrow";
+    if (raw === false) return "none";
+    if (raw == null || raw === "") return fallback || "none";
+    const id = String(raw);
+    return HEAD_STYLES.some((row) => row.id === id) ? id : fallback || "none";
+  }
+
+  function arrowHeadOf(stroke, which) {
+    if (which === "start") return normalizeHeadStyle(stroke?.headStart, "none");
+    return normalizeHeadStyle(stroke?.headEnd, "arrow");
+  }
+
+  function arrowHasHead(stroke, which) {
+    return arrowHeadOf(stroke, which) !== "none";
+  }
+
+  function nextHeadStyle(current, fallback) {
+    const ids = HEAD_STYLES.map((row) => row.id);
+    const cur = normalizeHeadStyle(current, fallback);
+    const idx = Math.max(0, ids.indexOf(cur));
+    return ids[(idx + 1) % ids.length];
+  }
+
+  function headInset(style, size) {
+    const kind = normalizeHeadStyle(style, "none");
+    if (kind === "stealth") return size * 0.5;
+    if (kind === "diamond") return size * 0.5;
+    if (kind === "oval") return size * 0.32;
+    return 0;
+  }
+
+  function insetAlong(from, toward, dist) {
+    const dx = toward.x - from.x;
+    const dy = toward.y - from.y;
+    const len = Math.hypot(dx, dy);
+    if (len < 1) return { x: from.x, y: from.y };
+    const t = Math.min(dist, len * 0.4) / len;
+    return { x: from.x + dx * t, y: from.y + dy * t };
+  }
+
+  function isRouteDraft(draft) {
+    return !!draft && (draft.type === "measure" || draft.type === "arrow") && draft.mode === "route";
+  }
+
+  function showToolHandles(toolName, stroke) {
+    if (toolName === "range" && state.rangeEdit && (!stroke || state.rangeEdit.id === stroke.id)) return true;
+    if (
+      (toolName === "measure" || toolName === "arrow") &&
+      state.measureEdit &&
+      (!stroke || state.measureEdit.id === stroke.id)
+    ) {
+      return true;
+    }
+    return state.tool === toolName && !!state.altHeld;
+  }
+
+  function setAltHeld(on) {
+    const next = !!on;
+    if (state.altHeld === next) return;
+    state.altHeld = next;
+    const container = getMapApi()?.getContainer();
+    if (container) container.style.cursor = next ? "crosshair" : "";
+  }
+
+  function rotPt(x, y, angle, ox, oy) {
+    const c = Math.cos(angle);
+    const s = Math.sin(angle);
+    return `${(ox + x * c - y * s).toFixed(2)} ${(oy + x * s + y * c).toFixed(2)}`;
+  }
+
+  function svgCapAt(x, y, angle, style, size) {
+    const p = (lx, ly) => rotPt(lx, ly, angle, x, y);
+    const kind = normalizeHeadStyle(style, "none");
+    if (kind === "none") return "";
+    if (kind === "arrow") {
+      return `<path d="M${p(-size, -size * 0.42)} L${p(0, 0)} L${p(-size, size * 0.42)}"/>`;
+    }
+    if (kind === "stealth") {
+      return `<path d="M${p(0, 0)} L${p(-size, -size * 0.4)} L${p(-size * 0.52, 0)} L${p(-size, size * 0.4)} Z" fill="currentColor"/>`;
+    }
+    if (kind === "diamond") {
+      return `<path d="M${p(0, 0)} L${p(-size * 0.5, -size * 0.36)} L${p(-size, 0)} L${p(-size * 0.5, size * 0.36)} Z" fill="currentColor"/>`;
+    }
+    if (kind === "oval") {
+      const c = Math.cos(angle);
+      const s = Math.sin(angle);
+      const r = size * 0.32;
+      return `<circle cx="${(x - r * 0.2 * c).toFixed(1)}" cy="${(y - r * 0.2 * s).toFixed(1)}" r="${r.toFixed(1)}" fill="currentColor"/>`;
+    }
+    return "";
+  }
+
+  function svgLineWithHeads(startStyle, endStyle) {
+    return `<svg viewBox="0 0 56 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10 8h36"/>${svgCapAt(6, 8, Math.PI, startStyle, 6)}${svgCapAt(50, 8, 0, endStyle, 6)}</svg>`;
+  }
+
+  function svgHeadCap(style, side) {
+    const start = side === "start";
+    const cap = start ? svgCapAt(8, 8, Math.PI, style, 6) : svgCapAt(28, 8, 0, style, 6);
+    const line = start ? `<path d="M10 8h22"/>` : `<path d="M4 8h18"/>`;
+    return `<svg viewBox="0 0 36 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${line}${cap}</svg>`;
+  }
+
+  function headStyleButtons(side) {
+    return HEAD_STYLES.map(
+      (row) =>
+        `<button class="head-cap" type="button" data-head-side="${side}" data-head-style="${row.id}" title="${side === "start" ? "Start" : "End"}: ${row.label}">${svgHeadCap(row.id, side)}</button>`
+    ).join("");
+  }
+
+  function headPresetButtons() {
+    return HEAD_PRESETS.map(
+      (row) =>
+        `<button class="head-cap head-preset" type="button" data-head-preset="${row.id}" title="${row.label}">${svgLineWithHeads(row.start, row.end)}</button>`
+    ).join("");
+  }
+
+  function svgLineStyle(style) {
+    const dashes = lineDashFor(style);
+    const dashAttr = dashes.length ? ` stroke-dasharray="${dashes.join(" ")}"` : "";
+    const cap = normalizeLineStyle(style) === "dot" ? "round" : "butt";
+    return `<svg viewBox="0 0 56 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="${cap}"><path d="M6 8h44"${dashAttr}/></svg>`;
+  }
+
+  function lineStyleButtons() {
+    return LINE_STYLES.map(
+      (row) =>
+        `<button class="line-opt" type="button" data-line-style="${row.id}" title="${row.label} line">${svgLineStyle(row.id)}<span>${row.label}</span></button>`
+    ).join("");
+  }
+
+  function drawArrowhead(ctx, from, to, size, style) {
+    const kind = normalizeHeadStyle(style, "arrow");
+    if (kind === "none") return;
     const angle = Math.atan2(to.y - from.y, to.x - from.x);
-    ctx.beginPath();
-    ctx.moveTo(to.x, to.y);
-    ctx.lineTo(
-      to.x - size * Math.cos(angle - Math.PI / 6),
-      to.y - size * Math.sin(angle - Math.PI / 6)
-    );
-    ctx.moveTo(to.x, to.y);
-    ctx.lineTo(
-      to.x - size * Math.cos(angle + Math.PI / 6),
-      to.y - size * Math.sin(angle + Math.PI / 6)
-    );
-    ctx.stroke();
+    const cos = Math.cos(angle);
+    const sin = Math.sin(angle);
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+    if (kind === "arrow") {
+      ctx.beginPath();
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(to.x - size * Math.cos(angle - Math.PI / 6), to.y - size * Math.sin(angle - Math.PI / 6));
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(to.x - size * Math.cos(angle + Math.PI / 6), to.y - size * Math.sin(angle + Math.PI / 6));
+      ctx.stroke();
+    } else if (kind === "stealth") {
+      const wing = Math.PI / 6.5;
+      ctx.beginPath();
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(to.x - size * Math.cos(angle - wing), to.y - size * Math.sin(angle - wing));
+      ctx.lineTo(to.x - size * 0.55 * cos, to.y - size * 0.55 * sin);
+      ctx.lineTo(to.x - size * Math.cos(angle + wing), to.y - size * Math.sin(angle + wing));
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (kind === "diamond") {
+      const back = size;
+      const half = size * 0.42;
+      ctx.beginPath();
+      ctx.moveTo(to.x, to.y);
+      ctx.lineTo(
+        to.x - half * Math.cos(angle - Math.PI / 2) - back * 0.5 * cos,
+        to.y - half * Math.sin(angle - Math.PI / 2) - back * 0.5 * sin
+      );
+      ctx.lineTo(to.x - back * cos, to.y - back * sin);
+      ctx.lineTo(
+        to.x - half * Math.cos(angle + Math.PI / 2) - back * 0.5 * cos,
+        to.y - half * Math.sin(angle + Math.PI / 2) - back * 0.5 * sin
+      );
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+    } else if (kind === "oval") {
+      const r = size * 0.32;
+      ctx.beginPath();
+      ctx.arc(to.x - r * 0.15 * cos, to.y - r * 0.15 * sin, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   function strokeScreenPath(stroke, canvas) {
@@ -1538,7 +1733,7 @@
   }
 
   function paintRange(ctx, stroke, canvas) {
-    const showHandles = state.tool === "range";
+    const showHandles = showToolHandles("range", stroke);
     const color = stroke.color;
     const layout = rangeLayout(stroke);
     if (layout.kind === "reach" && layout.combatRadius > 1) {
@@ -1684,11 +1879,11 @@
     const poly = measurePoly(stroke);
     if (poly.length < 2) return;
     const label = measureLabel(stroke);
-    const showHandles = state.tool === "measure";
+    const showHandles = showToolHandles("measure", stroke);
     for (const path of strokeScreenPath({ points: poly }, canvas)) {
       if (path.length < 2) continue;
       ctx.save();
-      ctx.setLineDash(stroke.snap ? [5, 4] : [7, 5]);
+      ctx.setLineDash([7, 5]);
       ctx.beginPath();
       ctx.moveTo(path[0].x, path[0].y);
       for (let i = 1; i < path.length; i += 1) ctx.lineTo(path[i].x, path[i].y);
@@ -1698,20 +1893,19 @@
       paintOutlinedLabel(ctx, label, mid.x + 8, mid.y - 6, stroke.color);
     }
     for (const path of strokeScreenPath({ points: stroke.points }, canvas)) {
+      if (!showHandles) continue;
       for (const p of path) {
         ctx.beginPath();
         ctx.arc(p.x, p.y, 4 + stroke.width, 0, Math.PI * 2);
         ctx.fill();
-        if (showHandles) {
-          ctx.save();
-          ctx.strokeStyle = "rgba(255, 224, 130, 0.95)";
-          ctx.lineWidth = 1.5;
-          ctx.setLineDash([]);
-          ctx.beginPath();
-          ctx.arc(p.x, p.y, 9 + stroke.width, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.restore();
-        }
+        ctx.save();
+        ctx.strokeStyle = "rgba(255, 224, 130, 0.95)";
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, 9 + stroke.width, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
       }
     }
   }
@@ -1739,15 +1933,23 @@
     return best;
   }
 
-  function findMeasureHandle(screen, canvas) {
+  function findPolyHandle(screen, canvas, type) {
     if (!screen || !canvas) return null;
     for (let i = state.strokes.length - 1; i >= 0; i -= 1) {
       const stroke = state.strokes[i];
-      if (stroke.type !== "measure") continue;
+      if (stroke.type !== type) continue;
       const mode = measureHitKind(stroke, screen, canvas);
       if (mode) return { index: i, id: stroke.id, mode };
     }
     return null;
+  }
+
+  function findMeasureHandle(screen, canvas) {
+    return findPolyHandle(screen, canvas, "measure");
+  }
+
+  function findArrowHandle(screen, canvas) {
+    return findPolyHandle(screen, canvas, "arrow");
   }
 
   function paintStroke(ctx, stroke, canvas) {
@@ -1815,12 +2017,62 @@
         ctx.fill();
         continue;
       }
+      ctx.setLineDash(lineDashFor(stroke.lineStyle));
       ctx.beginPath();
-      ctx.moveTo(path[0].x, path[0].y);
-      for (let i = 1; i < path.length; i += 1) ctx.lineTo(path[i].x, path[i].y);
-      ctx.stroke();
+      let drawPath = path;
       if (stroke.type === "arrow" && path.length >= 2) {
-        drawArrowhead(ctx, path[path.length - 2], path[path.length - 1], 12 + stroke.width * 2);
+        const size = 12 + stroke.width * 2;
+        const startIn = headInset(arrowHeadOf(stroke, "start"), size);
+        const endIn = headInset(arrowHeadOf(stroke, "end"), size);
+        if (startIn || endIn) {
+          drawPath = path.slice();
+          if (startIn) drawPath[0] = insetAlong(path[0], path[1], startIn);
+          if (endIn) {
+            drawPath[drawPath.length - 1] = insetAlong(
+              path[path.length - 1],
+              path[path.length - 2],
+              endIn
+            );
+          }
+        }
+      }
+      ctx.moveTo(drawPath[0].x, drawPath[0].y);
+      for (let i = 1; i < drawPath.length; i += 1) ctx.lineTo(drawPath[i].x, drawPath[i].y);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      if (stroke.type === "arrow" && path.length >= 2) {
+        const size = 12 + stroke.width * 2;
+        if (arrowHasHead(stroke, "start")) {
+          drawArrowhead(ctx, path[1], path[0], size, arrowHeadOf(stroke, "start"));
+        }
+        if (arrowHasHead(stroke, "end")) {
+          drawArrowhead(
+            ctx,
+            path[path.length - 2],
+            path[path.length - 1],
+            size,
+            arrowHeadOf(stroke, "end")
+          );
+        }
+      }
+    }
+    if (stroke.type === "arrow" && showToolHandles("arrow", stroke)) {
+      for (const path of strokeScreenPath(stroke, canvas)) {
+        path.forEach((p, i) => {
+          const end = i === 0 || i === path.length - 1;
+          ctx.beginPath();
+          ctx.arc(p.x, p.y, end ? 5 + stroke.width : 3 + stroke.width, 0, Math.PI * 2);
+          ctx.fill();
+          if (end) {
+            ctx.save();
+            ctx.strokeStyle = "rgba(255, 224, 130, 0.95)";
+            ctx.lineWidth = 1.5;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 9 + stroke.width, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+          }
+        });
       }
     }
     ctx.restore();
@@ -1937,10 +2189,12 @@
     } else if (state.tool === "eraser" && state.pointerScreen) {
       const idx = findStrokeIndexAt(state.pointerScreen, overlay);
       state.hoverStrokeId = idx >= 0 ? state.strokes[idx].id : null;
-    } else if (state.tool === "range" && state.pointerScreen && !state.draft) {
+    } else if (state.tool === "range" && state.altHeld && state.pointerScreen && !state.draft) {
       state.hoverStrokeId = findRangeHandle(state.pointerScreen, overlay)?.id || null;
-    } else if (state.tool === "measure" && state.pointerScreen && !state.draft) {
+    } else if (state.tool === "measure" && state.altHeld && state.pointerScreen && !state.draft) {
       state.hoverStrokeId = findMeasureHandle(state.pointerScreen, overlay)?.id || null;
+    } else if (state.tool === "arrow" && state.altHeld && state.pointerScreen && !state.draft) {
+      state.hoverStrokeId = findArrowHandle(state.pointerScreen, overlay)?.id || null;
     } else if (state.tool !== "eraser") {
       state.hoverStrokeId = null;
     }
@@ -1995,7 +2249,13 @@
     if (state.tool === "measure") {
       state.draft.mode = state.measureMode === "route" ? "route" : "segment";
       state.draft.travel = FEATURE_TTL && state.travelMode === "air" ? "air" : "surface";
-      state.draft.snap = !!state.snapEnabled && state.draft.travel !== "air";
+      state.draft.points = [mapPos, { x: mapPos.x, y: mapPos.y }];
+    }
+    if (state.tool === "arrow") {
+      state.draft.mode = state.arrowMode === "route" ? "route" : "segment";
+      state.draft.headStart = normalizeHeadStyle(state.arrowHeadStart, "none");
+      state.draft.headEnd = normalizeHeadStyle(state.arrowHeadEnd, "arrow");
+      state.draft.lineStyle = normalizeLineStyle(state.lineStyle);
       state.draft.points = [mapPos, { x: mapPos.x, y: mapPos.y }];
     }
   }
@@ -2019,7 +2279,7 @@
       }
       state.draft.points = [layout.origin];
     }
-    if (state.draft.type === "measure") {
+    if (state.draft.type === "measure" || state.draft.type === "arrow") {
       const pts = state.draft.points.filter((p, i, all) => {
         if (i === 0) return true;
         return mapSeparation(all[i - 1], p) >= 1;
@@ -2038,8 +2298,13 @@
       }
       state.draft.points = pts;
       state.draft.mode = state.draft.mode === "route" ? "route" : "segment";
-      state.draft.travel = state.draft.travel === "air" ? "air" : "surface";
-      state.draft.snap = !!state.draft.snap && state.draft.travel !== "air";
+      if (state.draft.type === "measure") {
+        state.draft.travel = state.draft.travel === "air" ? "air" : "surface";
+      } else {
+        state.draft.headStart = normalizeHeadStyle(state.draft.headStart, "none");
+        state.draft.headEnd = normalizeHeadStyle(state.draft.headEnd, "arrow");
+        state.draft.lineStyle = normalizeLineStyle(state.draft.lineStyle);
+      }
     }
     if (state.draft.points.length) state.strokes.push(state.draft);
     state.draft = null;
@@ -2249,6 +2514,7 @@
     };
 
     const onDown = (event) => {
+      setAltHeld(event.altKey);
       if (isOnToolbar(event)) return;
       if (state.textEdit && overMap(event)) {
         commitTextEdit();
@@ -2256,11 +2522,11 @@
       }
       if (!overMap(event)) return;
       if (state.draft) {
-        if (state.draft.type === "measure" && state.draft.mode === "route" && event.button === 2) {
+        if (isRouteDraft(state.draft) && event.button === 2) {
           finishRouteClick(event);
           return;
         }
-        if (state.draft.type === "measure" && state.draft.mode === "route" && isDrawChord(event)) {
+        if (isRouteDraft(state.draft) && isDrawChord(event)) {
           eat(event);
           const surface = drawCanvas();
           if (!surface) return;
@@ -2310,8 +2576,11 @@
         const overRange = findStrokeIndexAt(eventToScreen(event, surface), surface);
         if (overRange >= 0 && state.strokes[overRange].type === "range") return;
       }
-      if (state.tool === "measure") {
-        const handle = findMeasureHandle(eventToScreen(event, surface), surface);
+      if (state.tool === "measure" || state.tool === "arrow") {
+        const handle =
+          state.tool === "measure"
+            ? findMeasureHandle(eventToScreen(event, surface), surface)
+            : findArrowHandle(eventToScreen(event, surface), surface);
         if (handle) {
           const stroke = state.strokes[handle.index];
           state.measureEdit = {
@@ -2319,6 +2588,8 @@
             mode: handle.mode,
             grab: mapPos,
             start: stroke.points.map((p) => ({ x: p.x, y: p.y })),
+            moved: false,
+            strokeType: stroke.type,
           };
           state.hoverStrokeId = stroke.id;
           return;
@@ -2328,6 +2599,7 @@
     };
 
     const onMove = (event) => {
+      setAltHeld(event.altKey);
       const surface = drawCanvas();
       if (surface && overMap(event) && !isOnToolbar(event)) {
         state.pointerScreen = eventToScreen(event, surface);
@@ -2344,8 +2616,7 @@
         if (!surface) return;
         const stroke = state.strokes.find((item) => item.id === state.rangeEdit.id);
         if (!stroke) return;
-        const raw = toMap(eventToScreen(event, surface));
-        const mapPos = state.rangeEdit.mode === "move" ? snapMapPos(raw) : raw;
+        const mapPos = toMap(eventToScreen(event, surface));
         if (state.rangeEdit.mode === "move") moveRangeOrigin(stroke, mapPos);
         else if (state.rangeEdit.mode === "orbit") {
           setRangeHeading(stroke, mapPos, state.rangeEdit.combatRadius);
@@ -2363,6 +2634,7 @@
         const stroke = state.strokes.find((item) => item.id === state.measureEdit.id);
         if (!stroke) return;
         const mapPos = pointerMapPos(event, surface);
+        if (mapSeparation(mapPos, state.measureEdit.grab) >= 2) state.measureEdit.moved = true;
         const vertex = /^v(\d+)$/.exec(state.measureEdit.mode);
         if (vertex) stroke.points[Number(vertex[1])] = mapPos;
         else if (state.measureEdit.mode === "a") stroke.points[0] = mapPos;
@@ -2385,16 +2657,12 @@
         else applyReachFromDrag(state.draft, raw);
         return;
       }
-      if (state.draft.type === "measure") {
+      if (state.draft.type === "measure" || state.draft.type === "arrow") {
         if (state.draft.mode === "route") {
           state.draft.points[state.draft.points.length - 1] = mapPos;
         } else {
           state.draft.points = [state.draft.points[0], mapPos];
         }
-        return;
-      }
-      if (state.tool === "arrow") {
-        state.draft.points = [state.draft.points[0], mapPos];
         return;
       }
       state.draft.points.push(mapPos);
@@ -2417,13 +2685,26 @@
         return;
       }
       if (state.measureEdit) {
+        const edit = state.measureEdit;
+        const stroke = state.strokes.find((item) => item.id === edit.id);
+        if (stroke && edit.strokeType === "arrow" && !edit.moved) {
+          const vertex = /^v(\d+)$/.exec(edit.mode);
+          if (vertex) {
+            const idx = Number(vertex[1]);
+            if (idx === 0) stroke.headStart = nextHeadStyle(stroke.headStart, "none");
+            else if (idx === stroke.points.length - 1) {
+              stroke.headEnd = nextHeadStyle(stroke.headEnd, "arrow");
+            }
+            scheduleSave();
+          }
+        }
         state.measureEdit = null;
         eat(event);
         scheduleSave();
         return;
       }
       if (!state.draft || state.draft.type === "text") return;
-      if (state.draft.type === "measure" && state.draft.mode === "route") {
+      if (isRouteDraft(state.draft)) {
         eat(event);
         return;
       }
@@ -2446,17 +2727,13 @@
       opts
     );
 
-    const setDrawCursor = (on) => {
-      const container = getMapApi()?.getContainer();
-      if (container) container.style.cursor = on ? "crosshair" : "";
-    };
     window.addEventListener("keydown", (event) => {
-      if (event.key === "Alt") setDrawCursor(true);
+      if (event.key === "Alt") setAltHeld(true);
     });
     window.addEventListener("keyup", (event) => {
-      if (event.key === "Alt") setDrawCursor(false);
+      if (event.key === "Alt") setAltHeld(false);
     });
-    window.addEventListener("blur", () => setDrawCursor(false));
+    window.addEventListener("blur", () => setAltHeld(false));
   }
 
   function ui(selector) {
@@ -2472,10 +2749,13 @@
     if (note) note.hidden = tool !== "text";
     const range = ui("#con-intel-range-wrap");
     if (range) range.hidden = tool !== "range";
+    const arrow = ui("#con-intel-arrow-wrap");
+    if (arrow) arrow.hidden = tool !== "arrow";
     const nav = ui("#con-intel-nav-wrap");
-    if (nav) nav.hidden = tool !== "marker" && tool !== "range" && tool !== "measure";
+    if (nav) nav.hidden = tool !== "measure";
     const extra = ui("#con-intel-measure-extra");
     if (extra) extra.hidden = tool !== "measure";
+    closeStyleMenus();
     updateStatus();
     applyPanelLayout();
   }
@@ -2535,16 +2815,12 @@
         ? "Hold Alt + click a mark"
         : state.tool === "measure"
           ? state.draft?.mode === "route" || state.measureMode === "route"
-            ? FEATURE_TTL && state.travelMode === "air"
-              ? "Air route · Alt-click waypoints · right-click to finish"
-              : "Alt-click waypoints · right-click to finish"
-            : FEATURE_TTL && state.travelMode === "air"
-              ? "Air: Alt-drag · In Flight TTL"
-              : state.snapEnabled
-                ? "Alt-drag along travel path (experimental)"
-                : FEATURE_TTL
-                  ? "Alt-drag straight line · terrain TTL"
-                  : "Alt-drag to measure km"
+            ? "Alt-click waypoints · right-click to finish"
+            : "Alt-drag to measure km"
+          : state.tool === "arrow"
+            ? state.draft?.mode === "route" || state.arrowMode === "route"
+              ? "Alt-click waypoints · right-click to finish · Alt-click a tip to cycle that head"
+              : "Alt-drag · Alt-click a tip to cycle that head"
           : state.tool === "range"
           ? state.rangeKind === "sensors"
             ? "Alt-drag radar size · origin moves · R/S dots resize"
@@ -2552,15 +2828,7 @@
           : state.tool === "text" || state.tool === "marker"
             ? "Hold Alt + click"
             : "Hold Alt + drag";
-    el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}${
-      state.snapEnabled
-        ? mapNetworkCache?.byId?.size
-          ? ` · snap ${mapNetworkCache.byId.size} provinces`
-          : pathApiCache?.getPath || (pathApiCache?.pathFns || []).length
-            ? " · snap path"
-            : " · pathfinder not found"
-        : ""
-    }`;
+    el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}`;
   }
 
   function clampPanel(left, top, size) {
@@ -2746,11 +3014,35 @@
   }
 
   function syncNavUi() {
-    ui("#con-intel-snap")?.classList.toggle("active", !!state.snapEnabled);
     ui("#con-intel-seg")?.classList.toggle("active", state.measureMode !== "route");
     ui("#con-intel-route")?.classList.toggle("active", state.measureMode === "route");
     ui("#con-intel-surface")?.classList.toggle("active", state.travelMode !== "air");
     ui("#con-intel-air")?.classList.toggle("active", state.travelMode === "air");
+    ui("#con-intel-arrow-seg")?.classList.toggle("active", state.arrowMode !== "route");
+    ui("#con-intel-arrow-route")?.classList.toggle("active", state.arrowMode === "route");
+    const start = normalizeHeadStyle(state.arrowHeadStart, "none");
+    const end = normalizeHeadStyle(state.arrowHeadEnd, "arrow");
+    const preview = ui("#con-intel-head-preview");
+    if (preview) preview.innerHTML = svgLineWithHeads(start, end);
+    ui("#con-intel-head-pop")
+      ?.querySelectorAll("[data-head-preset]")
+      .forEach((el) => {
+        const preset = HEAD_PRESETS.find((row) => row.id === el.dataset.headPreset);
+        el.classList.toggle("active", !!preset && preset.start === start && preset.end === end);
+      });
+    ui("#con-intel-head-pop")
+      ?.querySelectorAll("[data-head-style]")
+      .forEach((el) => {
+        const current = el.dataset.headSide === "start" ? start : end;
+        el.classList.toggle("active", el.dataset.headStyle === current);
+      });
+    ui("#con-intel-line-pop")
+      ?.querySelectorAll("[data-line-style]")
+      .forEach((el) => {
+        el.classList.toggle("active", el.dataset.lineStyle === normalizeLineStyle(state.lineStyle));
+      });
+    const linePreview = ui("#con-intel-line-preview");
+    if (linePreview) linePreview.innerHTML = svgLineStyle(state.lineStyle);
     if (!FEATURE_TTL) return;
     const mult = ui("#con-intel-speed-mult");
     if (mult && document.activeElement !== mult) mult.value = String(state.speedMultiplier || 1);
@@ -2762,31 +3054,74 @@
     }
   }
 
-  function setSnapEnabled(on) {
-    state.snapEnabled = !!on;
-    travelPathCache.clear();
-    terrainPointCache.clear();
-    if (on) {
-      pathApiCache = null;
-      mapNetworkCache = null;
-      discoverPathApi(true);
-      getMapNetwork(true);
-    }
-    if (state.draft?.type === "measure") {
-      state.draft.snap = !!state.snapEnabled && (!FEATURE_TTL || travelOf(state.draft) !== "air");
-    }
+  function setArrowMode(mode) {
+    state.arrowMode = mode === "route" ? "route" : "segment";
+    if (state.draft?.type === "arrow") state.draft.mode = state.arrowMode;
     syncNavUi();
     scheduleSaveUi();
     updateStatus();
   }
 
+  function applyArrowHeadsToDraft() {
+    if (state.draft?.type !== "arrow") return;
+    state.draft.headStart = normalizeHeadStyle(state.arrowHeadStart, "none");
+    state.draft.headEnd = normalizeHeadStyle(state.arrowHeadEnd, "arrow");
+  }
+
+  function setArrowHead(which, style) {
+    const id = normalizeHeadStyle(style, which === "start" ? "none" : "arrow");
+    if (which === "start") state.arrowHeadStart = id;
+    else state.arrowHeadEnd = id;
+    applyArrowHeadsToDraft();
+    syncNavUi();
+    scheduleSaveUi();
+  }
+
+  function setArrowHeadPreset(id) {
+    const preset = HEAD_PRESETS.find((row) => row.id === id);
+    if (!preset) return;
+    state.arrowHeadStart = preset.start;
+    state.arrowHeadEnd = preset.end;
+    applyArrowHeadsToDraft();
+    syncNavUi();
+    scheduleSaveUi();
+  }
+
+  function setStyleMenuOpen(kind, open) {
+    const dd = ui(`#con-intel-${kind}-dd`);
+    const pop = ui(`#con-intel-${kind}-pop`);
+    const btn = ui(`#con-intel-${kind}-menu`);
+    if (!dd || !pop) return;
+    const on = !!open;
+    dd.classList.toggle("open", on);
+    pop.hidden = !on;
+    btn?.setAttribute("aria-expanded", on ? "true" : "false");
+  }
+
+  function closeStyleMenus() {
+    setStyleMenuOpen("head", false);
+    setStyleMenuOpen("line", false);
+  }
+
+  function toggleStyleMenu(kind) {
+    const pop = ui(`#con-intel-${kind}-pop`);
+    const willOpen = !!pop?.hidden;
+    closeStyleMenus();
+    if (willOpen) setStyleMenuOpen(kind, true);
+  }
+
+  function setLineStyle(style) {
+    state.lineStyle = normalizeLineStyle(style);
+    if (state.draft?.type === "arrow") state.draft.lineStyle = state.lineStyle;
+    syncNavUi();
+    scheduleSaveUi();
+    setStyleMenuOpen("line", false);
+  }
+
   function setTravelMode(mode) {
     if (!FEATURE_TTL) return;
     state.travelMode = mode === "air" ? "air" : "surface";
-    if (state.draft?.type === "measure") {
-      state.draft.travel = state.travelMode;
-      state.draft.snap = !!state.snapEnabled && state.travelMode !== "air";
-    }
+    if (state.draft?.type === "measure") state.draft.travel = state.travelMode;
     syncNavUi();
     scheduleSaveUi();
     updateStatus();
@@ -2913,6 +3248,45 @@
         }
         .nav-opts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
         .nav-opts .hint { color: #7f93a6; font-size: 10px; width: 100%; }
+        .head-dd { width: 100%; }
+        .head-trigger { width: 100%; justify-content: flex-start; }
+        .head-trigger .caret { margin-left: auto; opacity: 0.7; }
+        .head-preview { display: inline-flex; }
+        .head-preview svg { width: 52px; height: 14px; display: block; pointer-events: none; }
+        .head-pop {
+          width: 100%;
+          margin-top: 4px;
+          padding: 6px;
+          background: #0c151e;
+          border: 1px solid rgba(143, 212, 242, 0.35);
+          border-radius: 4px;
+        }
+        .head-section { color: #7f93a6; font-size: 10px; width: 100%; margin: 6px 0 3px; }
+        .head-pop .head-section:first-child { margin-top: 0; }
+        .head-row { display: flex; flex-wrap: wrap; gap: 4px; width: 100%; }
+        button.head-cap {
+          width: 40px;
+          min-height: 26px;
+          height: 26px;
+          padding: 2px 3px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+        button.head-cap svg { width: 34px; height: 14px; display: block; pointer-events: none; }
+        button.head-preset { width: 48px; }
+        button.head-preset svg { width: 42px; }
+        button.line-opt {
+          width: 100%;
+          min-height: 26px;
+          height: auto;
+          padding: 4px 8px;
+          display: flex;
+          align-items: center;
+          justify-content: flex-start;
+          gap: 8px;
+        }
+        button.line-opt svg { width: 44px; height: 14px; display: block; pointer-events: none; flex-shrink: 0; }
         .nav-opts label.speed {
           width: 100%;
           display: flex;
@@ -3066,16 +3440,44 @@
           <button id="con-intel-eraser" class="tool eraser" type="button" title="Eraser (Alt+7)">${ICO.eraser} Eraser</button>
         </div>
         <div class="kbd">Alt+1–7 tools · hold Alt and click the map to draw</div>
+        <div id="con-intel-arrow-wrap" class="nav-opts" hidden>
+          <button id="con-intel-arrow-seg" class="tool active" type="button" title="Two-point arrow">Segment</button>
+          <button id="con-intel-arrow-route" class="tool" type="button" title="Click waypoints, right-click to finish">Route</button>
+          <div class="head-dd" id="con-intel-head-dd">
+            <button id="con-intel-head-menu" class="tool head-trigger" type="button" title="Arrow heads" aria-expanded="false" aria-haspopup="true">
+              <span id="con-intel-head-preview" class="head-preview">${svgLineWithHeads("none", "arrow")}</span>
+              Heads
+              <span class="caret">▾</span>
+            </button>
+            <div class="head-pop" id="con-intel-head-pop" hidden>
+              <div class="head-section">Presets</div>
+              <div class="head-row">${headPresetButtons()}</div>
+              <div class="head-section">Start</div>
+              <div class="head-row">${headStyleButtons("start")}</div>
+              <div class="head-section">End</div>
+              <div class="head-row">${headStyleButtons("end")}</div>
+            </div>
+          </div>
+          <div class="head-dd" id="con-intel-line-dd">
+            <button id="con-intel-line-menu" class="tool head-trigger" type="button" title="Line style" aria-expanded="false" aria-haspopup="true">
+              <span id="con-intel-line-preview" class="head-preview">${svgLineStyle("solid")}</span>
+              Line
+              <span class="caret">▾</span>
+            </button>
+            <div class="head-pop" id="con-intel-line-pop" hidden>
+              <div class="head-row">${lineStyleButtons()}</div>
+            </div>
+          </div>
+          <div class="hint">Segment: Alt-drag. Route: Alt-click waypoints, right-click to finish. Heads and Line are Word-style dropdowns. Hold Alt to show and grab tips.</div>
+        </div>
         <div id="con-intel-range-wrap" class="range-opts" hidden>
           <button id="con-intel-kind-reach" class="tool active" type="button" title="Combat range plus radar and sight on the perimeter">Reach</button>
           <button id="con-intel-kind-sensors" class="tool" type="button" title="Radar and sight from a unit, no combat ring">Radar+Sight</button>
           <div class="hint">Combat size locks after place. Drag the center to move. Drag the hub on the ring to slide. Drag the R or S dots to resize radar and sight.</div>
         </div>
         <div id="con-intel-nav-wrap" class="nav-opts" hidden>
-          <div class="exp-note">Experimental. Snap and route measure read the live CoN client. They can break when the game updates.</div>
-          <button id="con-intel-snap" class="tool" type="button" title="Snap Marker, Range origin, and Measure to the travel path">Snap</button>
           <div id="con-intel-measure-extra" class="nav-opts" hidden>
-          <button id="con-intel-seg" class="tool active" type="button" title="Two-point straight or path measure">Segment</button>
+          <button id="con-intel-seg" class="tool active" type="button" title="Two-point straight measure">Segment</button>
           <button id="con-intel-route" class="tool" type="button" title="Click waypoints and sum the route">Route</button>
           ${
             FEATURE_TTL
@@ -3152,9 +3554,47 @@
     ui("#con-intel-measure").onclick = () => setTool("measure");
     ui("#con-intel-kind-reach").onclick = () => setRangeKind("reach");
     ui("#con-intel-kind-sensors").onclick = () => setRangeKind("sensors");
-    ui("#con-intel-snap").onclick = () => setSnapEnabled(!state.snapEnabled);
     ui("#con-intel-seg").onclick = () => setMeasureMode("segment");
     ui("#con-intel-route").onclick = () => setMeasureMode("route");
+    ui("#con-intel-arrow-seg").onclick = () => setArrowMode("segment");
+    ui("#con-intel-arrow-route").onclick = () => setArrowMode("route");
+    ui("#con-intel-head-menu").onclick = (event) => {
+      event.stopPropagation();
+      toggleStyleMenu("head");
+    };
+    ui("#con-intel-head-pop").addEventListener("click", (event) => {
+      const preset = event.target.closest("[data-head-preset]");
+      if (preset) {
+        setArrowHeadPreset(preset.dataset.headPreset);
+        return;
+      }
+      const cap = event.target.closest("[data-head-style]");
+      if (cap) setArrowHead(cap.dataset.headSide, cap.dataset.headStyle);
+    });
+    ui("#con-intel-line-menu").onclick = (event) => {
+      event.stopPropagation();
+      toggleStyleMenu("line");
+    };
+    ui("#con-intel-line-pop").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-line-style]");
+      if (!btn) return;
+      setLineStyle(btn.dataset.lineStyle);
+    });
+    root.addEventListener("click", (event) => {
+      const head = ui("#con-intel-head-dd");
+      const line = ui("#con-intel-line-dd");
+      if (head?.contains(event.target) || line?.contains(event.target)) return;
+      closeStyleMenus();
+    });
+    window.addEventListener(
+      "pointerdown",
+      (event) => {
+        if (ui("#con-intel-head-pop")?.hidden && ui("#con-intel-line-pop")?.hidden) return;
+        if (event.target === host || host.contains(event.target)) return;
+        closeStyleMenus();
+      },
+      true
+    );
     if (FEATURE_TTL) {
       ui("#con-intel-surface").onclick = () => setTravelMode("surface");
       ui("#con-intel-air").onclick = () => setTravelMode("air");
@@ -3263,6 +3703,7 @@
     window.addEventListener("keydown", (event) => {
       if (fromTypingField(event)) return;
       if (event.target && event.target.closest && event.target.closest("#con-intel-host")) return;
+      if (event.key === "Escape") closeStyleMenus();
       if (event.key === "Escape" && (state.draft || state.textEdit || state.rangeEdit || state.measureEdit)) {
         state.draft = null;
         state.rangeEdit = null;
@@ -3291,10 +3732,19 @@
         if (Number.isFinite(Number(uiState.expandedTop))) state.expandedTop = Number(uiState.expandedTop);
         if (typeof uiState.dockCorner === "string") state.dockCorner = uiState.dockCorner;
         state.panelCollapsed = !!uiState.collapsed;
-        if (typeof uiState.snapEnabled === "boolean") state.snapEnabled = uiState.snapEnabled;
         if (uiState.measureMode === "route" || uiState.measureMode === "segment") {
           state.measureMode = uiState.measureMode;
         }
+        if (uiState.arrowMode === "route" || uiState.arrowMode === "segment") {
+          state.arrowMode = uiState.arrowMode;
+        }
+        if (uiState.arrowHeadStart != null) {
+          state.arrowHeadStart = normalizeHeadStyle(uiState.arrowHeadStart, "none");
+        }
+        if (uiState.arrowHeadEnd != null) {
+          state.arrowHeadEnd = normalizeHeadStyle(uiState.arrowHeadEnd, "arrow");
+        }
+        if (uiState.lineStyle) state.lineStyle = normalizeLineStyle(uiState.lineStyle);
         if (uiState.travelMode === "air" || uiState.travelMode === "surface") {
           state.travelMode = uiState.travelMode;
         }

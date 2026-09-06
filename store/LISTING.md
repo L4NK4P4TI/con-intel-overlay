@@ -6,7 +6,7 @@ This extension is **unofficial** and must stay that way in the listing. Do not u
 
 ## Item ID / package
 
-Upload `dist/con-intel-overlay-1.1.19.zip` after running `.\store\pack.ps1`.
+Upload `dist/con-intel-overlay-1.2.0.zip` after running `.\store\pack.ps1`.
 
 ## Product name (max 45 characters)
 
@@ -44,11 +44,11 @@ HOW TO USE
 
 TOOLS
 • Pen — freehand strokes
-• Arrow — attack headings
+• Arrow — heading with Word-style Heads and Line dropdowns, route waypoints, and solid/dash/dot/dash-dot lines
 • Marker — pin a point
 • Text — multiline notes on the map (Enter for a new line, Ctrl+Enter or Save to place)
 • Range — Reach (combat + radar + sight) or Radar+Sight; combat size locks, radar/sight resize from their perimeter dots; radii labeled in km
-• Measure — Alt-drag two points to read distance in km. Experimental Route/Snap can follow in-game travel lines and may break if the client updates
+• Measure — Alt-drag two points to read distance in km. Route mode clicks waypoints and sums the path
 • Eraser — Alt-click a mark to delete it
 • Color palette — switch colors in one click
 • Export / Import — send sketches as a file; import merges and skips duplicates
