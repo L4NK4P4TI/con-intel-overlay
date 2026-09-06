@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "1.2.0";
+  const VERSION = "1.2.1";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const FEATURE_TTL = false;
@@ -22,6 +22,59 @@
     { id: "start", label: "Start arrow", start: "arrow", end: "none" },
     { id: "both", label: "Both arrows", start: "arrow", end: "arrow" },
   ];
+  const MARKER_ICONS = [
+    {
+      id: "pin",
+      label: "Pin",
+      body: `<path d="M8 2.5v7"/><circle cx="8" cy="12.2" r="2.1" fill="currentColor" stroke="none"/>`,
+    },
+    {
+      id: "flag",
+      label: "Flag",
+      body: `<path d="M4 13.5V2.6"/><path d="M4 2.8 12 5.3 4 7.9"/>`,
+    },
+    {
+      id: "target",
+      label: "Strike",
+      body: `<circle cx="8" cy="8" r="4.6"/><circle cx="8" cy="8" r="1.7"/><path d="M8 2.2v2.2M8 11.6v2.2M2.2 8h2.2M11.6 8h2.2"/>`,
+    },
+    {
+      id: "tank",
+      label: "Armor",
+      body: `<path d="M3 11.2h10"/><path d="M4.4 11 5.4 7.6h5.2L11.6 11"/><path d="M8 7.6V5.4h5"/>`,
+    },
+    {
+      id: "plane",
+      label: "Air",
+      body: `<path d="M8 2.4v11.2"/><path d="M2.8 7.6 8 6.2l5.2 1.4"/><path d="M5.2 12.4 8 10.6l2.8 1.8"/>`,
+    },
+    {
+      id: "ship",
+      label: "Navy",
+      body: `<path d="M3 10.2 5 12.6h6l2-2.4"/><path d="M6.2 10.2V6.2h3.6v4"/><path d="M8 6.2V4.2"/>`,
+    },
+    {
+      id: "city",
+      label: "City",
+      body: `<path d="M3 13V7.2h3V13"/><path d="M6.4 13V4h3.4v9"/><path d="M10.2 13V8.2H13V13"/><path d="M3 13h10"/>`,
+    },
+    {
+      id: "warning",
+      label: "Threat",
+      body: `<path d="M8 2.8 13.6 12.6H2.4Z"/><path d="M8 6.4v3.2"/><path d="M8 11.4v.2"/>`,
+    },
+    {
+      id: "star",
+      label: "Star",
+      body: `<path d="M8 2.4 9.6 6.4l4.4.4-3.2 2.8.9 4.2L8 11.6l-3.7 2.2.9-4.2-3.2-2.8 4.4-.4Z"/>`,
+    },
+    {
+      id: "eye",
+      label: "Recon",
+      body: `<path d="M2.2 8s2.3-4 5.8-4 5.8 4 5.8 4-2.3 4-5.8 4-5.8-4-5.8-4z"/><circle cx="8" cy="8" r="1.5"/>`,
+    },
+  ];
+  const PANEL_MIN_W = 292;
   const WRAP_MARGIN = 240;
   const PALETTE = [
     "#ff4d4d",
@@ -80,6 +133,7 @@
     arrowHeadStart: "none",
     arrowHeadEnd: "arrow",
     lineStyle: "solid",
+    markerIcon: "pin",
     travelMode: "surface",
     speedMultiplier: 4,
     speedVals: {
@@ -1008,8 +1062,10 @@
       #con-intel-host {
         position: fixed !important;
         z-index: 2147483646 !important;
-        pointer-events: auto !important;
+        pointer-events: none !important;
         width: auto !important;
+        height: auto !important;
+        max-width: none !important;
         transition: left 0.28s cubic-bezier(0.22, 1, 0.32, 1), top 0.28s cubic-bezier(0.22, 1, 0.32, 1) !important;
       }
       #con-intel-host.dragging,
@@ -1046,11 +1102,15 @@
   }
 
   function toMap(screen) {
-    return getMapApi().toMap(screen);
+    const api = getMapApi();
+    if (!api || !screen) return null;
+    return api.toMap(screen);
   }
 
   function fromMap(mapPos) {
-    return getMapApi().fromMap(mapPos);
+    const api = getMapApi();
+    if (!api || !mapPos) return { x: 0, y: 0 };
+    return api.fromMap(mapPos);
   }
 
   function wrapCopies(mapPos) {
@@ -1137,6 +1197,7 @@
             arrowHeadStart: normalizeHeadStyle(state.arrowHeadStart, "none"),
             arrowHeadEnd: normalizeHeadStyle(state.arrowHeadEnd, "arrow"),
             lineStyle: normalizeLineStyle(state.lineStyle),
+            markerIcon: normalizeMarkerIcon(state.markerIcon),
             travelMode: state.travelMode,
             speedMultiplier: state.speedMultiplier,
             speedVals: { ...state.speedVals },
@@ -1173,6 +1234,7 @@
         stroke.label = String(item.label || "").slice(0, 4000);
         if (!stroke.label.trim()) continue;
       }
+      if (item.type === "marker") stroke.icon = normalizeMarkerIcon(item.icon);
       if (item.type === "range") {
         const origin = points[0];
         const rim = points[1];
@@ -1207,6 +1269,13 @@
         stroke.combatRadius = combatRadius;
         stroke.radarRadius = radarRadius;
         stroke.sightRadius = sightRadius;
+        if (kind === "reach") {
+          const storedProbe = Number(item.probeRadius);
+          stroke.probeRadius = Number.isFinite(storedProbe)
+            ? Math.max(0, storedProbe)
+            : combatRadius;
+          clampReachHub(stroke);
+        }
       }
       if (item.type === "arrow") {
         if (points.length < 2) continue;
@@ -1319,6 +1388,38 @@
   function lineDashFor(style) {
     const row = LINE_STYLES.find((item) => item.id === normalizeLineStyle(style));
     return row ? row.dash : [];
+  }
+
+  function normalizeMarkerIcon(raw) {
+    const id = String(raw || "pin");
+    return MARKER_ICONS.some((row) => row.id === id) ? id : "pin";
+  }
+
+  function markerIconSvg(id, color) {
+    const row = MARKER_ICONS.find((item) => item.id === normalizeMarkerIcon(id));
+    const stroke = color || "currentColor";
+    const filled = String(row.body).replace(/currentColor/g, stroke);
+    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${filled}</svg>`;
+  }
+
+  function markerIconButton(row) {
+    return `<button class="marker-ico" type="button" data-marker-icon="${row.id}" title="${row.label}">${markerIconSvg(row.id)}</button>`;
+  }
+
+  const markerImgCache = new Map();
+
+  function markerIconImage(id, color) {
+    const icon = normalizeMarkerIcon(id);
+    const key = `${icon}|${color}`;
+    let img = markerImgCache.get(key);
+    if (img) return img;
+    const row = MARKER_ICONS.find((item) => item.id === icon);
+    const body = String(row.body).replace(/currentColor/g, color);
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="64" height="64" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><g stroke="rgba(0,0,0,0.88)" stroke-width="3">${body}</g><g>${body}</g></svg>`;
+    img = new Image();
+    img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`;
+    markerImgCache.set(key, img);
+    return img;
   }
 
   function normalizeHeadStyle(raw, fallback) {
@@ -1574,10 +1675,17 @@
   }
 
   function polarOffset(origin, heading, radius) {
+    if (!origin) return { x: 0, y: 0 };
     return {
       x: origin.x + Math.cos(heading) * radius,
       y: origin.y + Math.sin(heading) * radius,
     };
+  }
+
+  function clampReachHub(stroke) {
+    if (!stroke || stroke.kind === "sensors") return;
+    const combat = Math.max(0, Number(stroke.combatRadius) || 0);
+    stroke.probeRadius = Math.min(Math.max(0, Number(stroke.probeRadius) || 0), combat);
   }
 
   function rangeLayout(stroke) {
@@ -1587,7 +1695,13 @@
     const combatRadius = kind === "reach" ? Math.max(0, Number(stroke.combatRadius) || 0) : 0;
     const radarRadius = Math.max(0, Number(stroke.radarRadius) || 0);
     const sightRadius = Math.max(0, Number(stroke.sightRadius) || 0);
-    const probe = kind === "reach" ? polarOffset(origin, heading, combatRadius) : { x: origin.x, y: origin.y };
+    let probeRadius = 0;
+    if (kind === "reach") {
+      const stored = Number(stroke.probeRadius);
+      probeRadius = Number.isFinite(stored) ? Math.max(0, stored) : combatRadius;
+      probeRadius = Math.min(probeRadius, combatRadius);
+    }
+    const probe = kind === "reach" ? polarOffset(origin, heading, probeRadius) : { x: origin.x, y: origin.y };
     return {
       kind,
       origin,
@@ -1595,6 +1709,7 @@
       combatRadius,
       radarRadius,
       sightRadius,
+      probeRadius,
       probe,
       radarHandle: polarOffset(probe, heading, radarRadius),
       sightHandle: polarOffset(probe, heading, sightRadius),
@@ -1603,14 +1718,17 @@
 
   function applyReachFromDrag(stroke, mapPos) {
     const origin = stroke.points[0];
+    if (!origin || !mapPos) return;
     const dx = mapPos.x - origin.x;
     const dy = mapPos.y - origin.y;
     const radius = Math.hypot(dx, dy);
     stroke.kind = "reach";
     stroke.heading = Math.atan2(dy, dx);
     stroke.combatRadius = radius;
+    stroke.probeRadius = 0;
     stroke.radarRadius = Math.max(1, radius * 0.22);
     stroke.sightRadius = Math.max(1, radius * 0.1);
+    clampReachHub(stroke);
   }
 
   function applySensorsFromDrag(stroke, mapPos) {
@@ -1636,6 +1754,16 @@
     if (stroke.kind !== "sensors") {
       stroke.combatRadius = lockedCombatRadius != null ? lockedCombatRadius : stroke.combatRadius;
     }
+  }
+
+  function setRangeProbe(stroke, mapPos) {
+    const origin = stroke.points[0];
+    if (!origin || stroke.kind === "sensors") return;
+    const dx = mapPos.x - origin.x;
+    const dy = mapPos.y - origin.y;
+    stroke.heading = Math.atan2(dy, dx);
+    stroke.probeRadius = Math.hypot(dx, dy);
+    clampReachHub(stroke);
   }
 
   function setSensorRadius(stroke, which, mapPos) {
@@ -1693,9 +1821,9 @@
       const probe = shift(layout.probe);
       const radarHandle = shift(layout.radarHandle);
       const sightHandle = shift(layout.sightHandle);
-      const combatR = Math.hypot(probe.x - origin.x, probe.y - origin.y);
-      const radarR = Math.hypot(radarHandle.x - probe.x, radarHandle.y - probe.y);
-      const sightR = Math.hypot(sightHandle.x - probe.x, sightHandle.y - probe.y);
+      const combatR = layout.kind === "reach" ? layout.combatRadius : 0;
+      const radarR = layout.radarRadius;
+      const sightR = layout.sightRadius;
       const span = Math.max(combatR, radarR, sightR);
       if (
         origin.x < -WRAP_MARGIN - span ||
@@ -1994,16 +2122,29 @@
             ctx.fillText(line, x, y);
           });
         } else if (stroke.type === "marker") {
-          const radius = markerRadius(stroke);
-          const stem = markerStem(stroke);
-          const cy = p.y + stem + radius;
-          ctx.beginPath();
-          ctx.moveTo(p.x, p.y);
-          ctx.lineTo(p.x, cy - radius);
-          ctx.stroke();
-          ctx.beginPath();
-          ctx.arc(p.x, cy, radius, 0, Math.PI * 2);
-          ctx.fill();
+          const icon = normalizeMarkerIcon(stroke.icon);
+          if (icon === "pin") {
+            const radius = markerRadius(stroke);
+            const stem = markerStem(stroke);
+            const cy = p.y + stem + radius;
+            ctx.beginPath();
+            ctx.moveTo(p.x, p.y);
+            ctx.lineTo(p.x, cy - radius);
+            ctx.stroke();
+            ctx.beginPath();
+            ctx.arc(p.x, cy, radius, 0, Math.PI * 2);
+            ctx.fill();
+          } else {
+            const size = 16 + stroke.width * 3;
+            const img = markerIconImage(icon, stroke.color);
+            if (img.complete && img.naturalWidth) {
+              ctx.drawImage(img, p.x - size / 2, p.y - size / 2, size, size);
+            } else {
+              ctx.beginPath();
+              ctx.arc(p.x, p.y, markerRadius(stroke), 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
         }
       }
       ctx.restore();
@@ -2125,13 +2266,20 @@
       return measureHitKind(stroke, screen, canvas) != null;
     }
     if (stroke.type === "marker") {
-      const radius = markerRadius(stroke);
-      const stem = markerStem(stroke);
-      return screenPoints(stroke.points[0], canvas).some((p) => {
-        const circle = { x: p.x, y: p.y + stem + radius };
-        if (Math.hypot(circle.x - screen.x, circle.y - screen.y) <= radius + pad) return true;
-        return distToSegment(screen, p, { x: p.x, y: circle.y - radius }) <= pad;
-      });
+      const icon = normalizeMarkerIcon(stroke.icon);
+      if (icon === "pin") {
+        const radius = markerRadius(stroke);
+        const stem = markerStem(stroke);
+        return screenPoints(stroke.points[0], canvas).some((p) => {
+          const circle = { x: p.x, y: p.y + stem + radius };
+          if (Math.hypot(circle.x - screen.x, circle.y - screen.y) <= radius + pad) return true;
+          return distToSegment(screen, p, { x: p.x, y: circle.y - radius }) <= pad;
+        });
+      }
+      const size = 10 + stroke.width * 2;
+      return screenPoints(stroke.points[0], canvas).some(
+        (p) => Math.hypot(p.x - screen.x, p.y - screen.y) <= size + pad
+      );
     }
     for (const path of strokeScreenPath(stroke, canvas)) {
       if (path.length === 1) {
@@ -2226,7 +2374,11 @@
   }
 
   function loop() {
-    render();
+    try {
+      render();
+    } catch (err) {
+      LOG("render failed", err);
+    }
     requestAnimationFrame(loop);
   }
 
@@ -2258,6 +2410,9 @@
       state.draft.lineStyle = normalizeLineStyle(state.lineStyle);
       state.draft.points = [mapPos, { x: mapPos.x, y: mapPos.y }];
     }
+    if (state.tool === "marker") {
+      state.draft.icon = normalizeMarkerIcon(state.markerIcon);
+    }
   }
 
   function finishDraft() {
@@ -2271,7 +2426,7 @@
       const extent =
         layout.kind === "sensors"
           ? fromMap(layout.radarHandle)
-          : fromMap(layout.probe);
+          : fromMap(polarOffset(layout.origin, layout.heading, layout.combatRadius));
       if (Math.hypot(extent.x - origin.x, extent.y - origin.y) < 12) {
         state.draft = null;
         updateStatus();
@@ -2477,7 +2632,9 @@
   }
 
   function isDrawChord(event) {
-    return event.altKey && event.button === 0;
+    if (!event || event.ctrlKey || event.metaKey) return false;
+    const alt = !!(event.altKey || event.getModifierState?.("Alt"));
+    return alt && event.button === 0;
   }
 
   function isOnToolbar(event) {
@@ -2545,6 +2702,7 @@
       const surface = drawCanvas();
       if (!surface) return;
       const mapPos = pointerMapPos(event, surface);
+      if (!mapPos) return;
       if (state.tool === "marker") {
         startDraft(mapPos);
         finishDraft();
@@ -2618,11 +2776,7 @@
         if (!stroke) return;
         const mapPos = toMap(eventToScreen(event, surface));
         if (state.rangeEdit.mode === "move") moveRangeOrigin(stroke, mapPos);
-        else if (state.rangeEdit.mode === "orbit") {
-          setRangeHeading(stroke, mapPos, state.rangeEdit.combatRadius);
-          stroke.radarRadius = state.rangeEdit.radarRadius;
-          stroke.sightRadius = state.rangeEdit.sightRadius;
-        }
+        else if (state.rangeEdit.mode === "orbit") setRangeProbe(stroke, mapPos);
         else if (state.rangeEdit.mode === "radar") setSensorRadius(stroke, "radar", mapPos);
         else if (state.rangeEdit.mode === "sight") setSensorRadius(stroke, "sight", mapPos);
         scheduleSave();
@@ -2755,6 +2909,8 @@
     if (nav) nav.hidden = tool !== "measure";
     const extra = ui("#con-intel-measure-extra");
     if (extra) extra.hidden = tool !== "measure";
+    const marker = ui("#con-intel-marker-wrap");
+    if (marker) marker.hidden = tool !== "marker";
     closeStyleMenus();
     updateStatus();
     applyPanelLayout();
@@ -2824,8 +2980,10 @@
           : state.tool === "range"
           ? state.rangeKind === "sensors"
             ? "Alt-drag radar size · origin moves · R/S dots resize"
-            : "Alt-drag combat size (locks) · origin moves · hub slides · R/S dots resize"
-          : state.tool === "text" || state.tool === "marker"
+            : "Alt-drag combat size (locks) · origin moves · hub stays inside combat · R/S resize"
+          : state.tool === "marker"
+            ? "Pick an icon · Alt-click to stamp"
+          : state.tool === "text"
             ? "Hold Alt + click"
             : "Hold Alt + drag";
     el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}`;
@@ -2833,7 +2991,7 @@
 
   function clampPanel(left, top, size) {
     const host = state.toolbar;
-    const w = size?.w || host?.offsetWidth || (state.panelCollapsed ? 52 : 248);
+    const w = size?.w || host?.offsetWidth || (state.panelCollapsed ? 52 : PANEL_MIN_W);
     const h = size?.h || host?.offsetHeight || (state.panelCollapsed ? 52 : 280);
     const maxL = Math.max(8, window.innerWidth - w - 8);
     const maxT = Math.max(8, window.innerHeight - h - 8);
@@ -2863,7 +3021,7 @@
   }
 
   function restoreExpandedPos(corner) {
-    const w = 248;
+    const w = state.toolbar?.offsetWidth || PANEL_MIN_W;
     const h = state.toolbar?.offsetHeight || 320;
     const left = Number.isFinite(state.expandedLeft) ? state.expandedLeft : state.panelLeft;
     const top = Number.isFinite(state.expandedTop) ? state.expandedTop : state.panelTop;
@@ -2902,10 +3060,11 @@
     host.style.top = `${pos.top}px`;
     host.style.right = "auto";
     host.style.bottom = "auto";
-    host.style.width = state.panelCollapsed ? "auto" : "248px";
+    host.style.width = "auto";
+    host.style.height = "auto";
     const size = state.panelCollapsed
       ? { w: 52, h: 52 }
-      : { w: host.offsetWidth || 248, h: host.offsetHeight || 280 };
+      : { w: host.offsetWidth || PANEL_MIN_W, h: host.offsetHeight || 280 };
     const corner =
       state.dockCorner || nearestCorner(state.panelLeft + size.w / 2, state.panelTop + size.h / 2);
     host.style.setProperty("--dock-origin", originForCorner(corner));
@@ -2917,7 +3076,7 @@
     if (!host || next === state.panelCollapsed) return;
 
     if (next) {
-      const w = host.offsetWidth || 248;
+      const w = host.offsetWidth || PANEL_MIN_W;
       const h = host.offsetHeight || 280;
       state.expandedLeft = state.panelLeft;
       state.expandedTop = state.panelTop;
@@ -3043,6 +3202,11 @@
       });
     const linePreview = ui("#con-intel-line-preview");
     if (linePreview) linePreview.innerHTML = svgLineStyle(state.lineStyle);
+    ui("#con-intel-marker-wrap")
+      ?.querySelectorAll("[data-marker-icon]")
+      .forEach((el) => {
+        el.classList.toggle("active", el.dataset.markerIcon === normalizeMarkerIcon(state.markerIcon));
+      });
     if (!FEATURE_TTL) return;
     const mult = ui("#con-intel-speed-mult");
     if (mult && document.activeElement !== mult) mult.value = String(state.speedMultiplier || 1);
@@ -3118,6 +3282,13 @@
     setStyleMenuOpen("line", false);
   }
 
+  function setMarkerIcon(id) {
+    state.markerIcon = normalizeMarkerIcon(id);
+    if (state.draft?.type === "marker") state.draft.icon = state.markerIcon;
+    syncNavUi();
+    scheduleSaveUi();
+  }
+
   function setTravelMode(mode) {
     if (!FEATURE_TTL) return;
     state.travelMode = mode === "air" ? "air" : "surface";
@@ -3147,8 +3318,9 @@
           display: flex;
           flex-direction: column;
           gap: 8px;
-          padding: 10px;
-          width: 248px;
+          padding: 10px 12px;
+          width: min(312px, calc(100vw - 24px));
+          min-width: min(292px, calc(100vw - 24px));
           color: #e8eef5;
           font: 12px/1.4 Segoe UI, Tahoma, sans-serif;
           background: rgba(10, 16, 24, 0.94);
@@ -3157,7 +3329,30 @@
           box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
           user-select: none;
           max-height: min(90vh, 740px);
+          overflow-x: hidden;
           overflow-y: auto;
+          scrollbar-width: thin;
+          scrollbar-color: rgba(143, 212, 242, 0.5) rgba(8, 14, 22, 0.35);
+          scrollbar-gutter: stable;
+        }
+        .panel::-webkit-scrollbar {
+          width: 8px;
+        }
+        .panel::-webkit-scrollbar-track {
+          margin: 8px 2px;
+          background: rgba(8, 14, 22, 0.55);
+          border-radius: 99px;
+        }
+        .panel::-webkit-scrollbar-thumb {
+          background: rgba(143, 212, 242, 0.4);
+          border: 2px solid rgba(10, 16, 24, 0.94);
+          border-radius: 99px;
+        }
+        .panel::-webkit-scrollbar-thumb:hover {
+          background: rgba(143, 212, 242, 0.7);
+        }
+        .panel::-webkit-scrollbar-corner {
+          background: transparent;
         }
         .titlebar {
           display: flex;
@@ -3187,6 +3382,7 @@
           user-select: none;
         }
         .panel, .fab {
+          pointer-events: auto;
           transform-origin: var(--dock-origin, 0% 100%);
         }
         .panel.pop, .fab.pop {
@@ -3247,9 +3443,9 @@
           border-radius: 4px;
         }
         .nav-opts { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
-        .nav-opts .hint { color: #7f93a6; font-size: 10px; width: 100%; }
+        .nav-opts .hint { color: #7f93a6; font-size: 10px; width: 100%; overflow-wrap: anywhere; }
         .head-dd { width: 100%; }
-        .head-trigger { width: 100%; justify-content: flex-start; }
+        .head-trigger { width: 100%; min-width: 0; justify-content: flex-start; }
         .head-trigger .caret { margin-left: auto; opacity: 0.7; }
         .head-preview { display: inline-flex; }
         .head-preview svg { width: 52px; height: 14px; display: block; pointer-events: none; }
@@ -3287,6 +3483,22 @@
           gap: 8px;
         }
         button.line-opt svg { width: 44px; height: 14px; display: block; pointer-events: none; flex-shrink: 0; }
+        .marker-grid {
+          display: grid;
+          grid-template-columns: repeat(5, 1fr);
+          gap: 4px;
+          width: 100%;
+        }
+        button.marker-ico {
+          width: 100%;
+          min-height: 30px;
+          height: 30px;
+          padding: 4px;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+        }
+        button.marker-ico svg { width: 16px; height: 16px; display: block; pointer-events: none; }
         .nav-opts label.speed {
           width: 100%;
           display: flex;
@@ -3394,6 +3606,7 @@
         .status {
           color: #9fb3c4;
           font-size: 11px;
+          overflow-wrap: anywhere;
         }
         input[type="color"] {
           width: 28px;
@@ -3470,10 +3683,14 @@
           </div>
           <div class="hint">Segment: Alt-drag. Route: Alt-click waypoints, right-click to finish. Heads and Line are Word-style dropdowns. Hold Alt to show and grab tips.</div>
         </div>
+        <div id="con-intel-marker-wrap" class="nav-opts" hidden>
+          <div class="marker-grid">${MARKER_ICONS.map((row) => markerIconButton(row)).join("")}</div>
+          <div class="hint">Alt-click to stamp. Short CoN set — pin, flag, strike, armor, air, navy, city, threat, star, recon.</div>
+        </div>
         <div id="con-intel-range-wrap" class="range-opts" hidden>
-          <button id="con-intel-kind-reach" class="tool active" type="button" title="Combat range plus radar and sight on the perimeter">Reach</button>
+          <button id="con-intel-kind-reach" class="tool active" type="button" title="Combat range plus radar and sight; hub stays inside combat">Reach</button>
           <button id="con-intel-kind-sensors" class="tool" type="button" title="Radar and sight from a unit, no combat ring">Radar+Sight</button>
-          <div class="hint">Combat size locks after place. Drag the center to move. Drag the hub on the ring to slide. Drag the R or S dots to resize radar and sight.</div>
+          <div class="hint">Combat size locks after place. Drag the center to move. Drag the hub (center of radar/sight) anywhere inside combat — the hub cannot leave that ring. Radar and sight may extend past it. Drag the R or S dots to resize.</div>
         </div>
         <div id="con-intel-nav-wrap" class="nav-opts" hidden>
           <div id="con-intel-measure-extra" class="nav-opts" hidden>
@@ -3549,6 +3766,11 @@
     ui("#con-intel-pen").onclick = () => setTool("pen");
     ui("#con-intel-arrow").onclick = () => setTool("arrow");
     ui("#con-intel-marker").onclick = () => setTool("marker");
+    ui("#con-intel-marker-wrap").addEventListener("click", (event) => {
+      const btn = event.target.closest("[data-marker-icon]");
+      if (!btn) return;
+      setMarkerIcon(btn.dataset.markerIcon);
+    });
     ui("#con-intel-text").onclick = () => setTool("text");
     ui("#con-intel-range").onclick = () => setTool("range");
     ui("#con-intel-measure").onclick = () => setTool("measure");
@@ -3745,6 +3967,7 @@
           state.arrowHeadEnd = normalizeHeadStyle(uiState.arrowHeadEnd, "arrow");
         }
         if (uiState.lineStyle) state.lineStyle = normalizeLineStyle(uiState.lineStyle);
+        if (uiState.markerIcon) state.markerIcon = normalizeMarkerIcon(uiState.markerIcon);
         if (uiState.travelMode === "air" || uiState.travelMode === "surface") {
           state.travelMode = uiState.travelMode;
         }
@@ -3806,7 +4029,11 @@
     state.ctx = overlay.getContext("2d");
 
     bindMapDrawEvents();
-    createToolbar();
+    try {
+      createToolbar();
+    } catch (err) {
+      LOG("toolbar failed", err);
+    }
     hideBoot();
     loadStrokes();
     updateStatus();
