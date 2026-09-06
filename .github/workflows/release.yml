@@ -1,0 +1,93 @@
+name: Release
+
+# Publishes a GitHub release only when major or minor bumps (M.m.x).
+# Patch/bugfix bumps (the third number) do not create a release.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: github-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Decide whether to release
+        id: meta
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          function Parse-Ver([string]$raw) {
+            if (-not $raw) { return $null }
+            $text = ([string]$raw).Trim() -replace '^v', ''
+            if ($text -notmatch '^(\d+)\.(\d+)\.(\d+)') { return $null }
+            [pscustomobject]@{
+              text = "$($Matches[1]).$($Matches[2]).$($Matches[3])"
+              major = [int]$Matches[1]
+              minor = [int]$Matches[2]
+              patch = [int]$Matches[3]
+            }
+          }
+
+          $current = Parse-Ver ((Get-Content manifest.json -Raw | ConvertFrom-Json).version)
+          if (-not $current) { throw "manifest.json has no M.m.p version" }
+
+          $PSNativeCommandUseErrorActionPreference = $false
+          $latestTag = gh release list --limit 1 --json tagName --jq ".[0].tagName" 2>$null
+          $baseline = Parse-Ver $latestTag
+
+          if (-not $baseline -and $env:BEFORE_SHA -and $env:BEFORE_SHA -notmatch '^0+$') {
+            $prevJson = git show "$($env:BEFORE_SHA):manifest.json" 2>$null
+            if ($LASTEXITCODE -eq 0 -and $prevJson) {
+              $baseline = Parse-Ver (($prevJson | ConvertFrom-Json).version)
+            }
+          }
+
+          gh release view "v$($current.text)" *> $null
+          $exists = $LASTEXITCODE -eq 0
+
+          $majorMinorChanged = $false
+          if ($baseline) {
+            $majorMinorChanged = ($current.major -ne $baseline.major) -or ($current.minor -ne $baseline.minor)
+          } else {
+            $majorMinorChanged = $current.patch -eq 0
+          }
+
+          $publish = (-not $exists) -and $majorMinorChanged
+          "version=$($current.text)" | Add-Content $env:GITHUB_OUTPUT
+          "publish=$($publish.ToString().ToLower())" | Add-Content $env:GITHUB_OUTPUT
+
+          Write-Host "Current $($current.text); baseline $($baseline.text); exists $exists; major/minor changed $majorMinorChanged; publish $publish"
+          if (-not $publish -and -not $exists -and -not $majorMinorChanged) {
+            Write-Host "Skipping patch/bugfix $($current.text). Releases run for major or minor only."
+          }
+
+      - name: Pack zip
+        if: steps.meta.outputs.publish == 'true'
+        shell: pwsh
+        run: .\store\pack.ps1
+
+      - name: Create GitHub release
+        if: steps.meta.outputs.publish == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $v = "${{ steps.meta.outputs.version }}"
+          $zip = "dist/con-intel-overlay-$v.zip"
+          if (-not (Test-Path $zip)) { throw "Missing $zip" }
+          gh release create "v$v" $zip --title $v --generate-notes

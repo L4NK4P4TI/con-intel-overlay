@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "1.2.6";
+  const VERSION = "1.2.7";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const FEATURE_TTL = false;
@@ -103,6 +103,7 @@
     import: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3v6.5"/><path d="M5.5 7.5 8 10l2.5-2.5"/><path d="M3.5 12.5h9"/></svg>`,
     trash: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5h9"/><path d="M6 5V3.5h4V5"/><path d="M5 5.5v7h6v-7"/><path d="M7 7.5v3.5M9 7.5v3.5"/></svg>`,
     min: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.5 8h9"/></svg>`,
+    dropper: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 2.8 13.2 6.8"/><path d="M11.6 1.8 14.2 4.4a1.2 1.2 0 0 1 0 1.7l-1.1 1.1-4.4-4.4 1.1-1.1a1.2 1.2 0 0 1 1.8.1z"/><path d="M8.8 5.2 3.4 10.6 2.5 13.5l2.9-.9 5.4-5.4"/></svg>`,
   };
   const LOG = (...args) => console.info("[con-intel]", ...args);
 
@@ -3733,6 +3734,8 @@
     state.color = color;
     const picker = ui("#con-intel-color");
     if (picker) picker.value = color;
+    const swatch = ui("#con-intel-custom-swatch");
+    if (swatch) swatch.style.background = color;
     syncPalette();
   }
 
@@ -3743,6 +3746,9 @@
       .forEach((el) => {
         el.classList.toggle("active", (el.dataset.color || "").toLowerCase() === current);
       });
+    const custom = ui("#con-intel-custom-color");
+    const isPreset = PALETTE.some((color) => color.toLowerCase() === current);
+    custom?.classList.toggle("active", !!current && !isPreset);
   }
 
   function updateStatus() {
@@ -4097,8 +4103,9 @@
         .panel {
           display: flex;
           flex-direction: column;
+          align-items: stretch;
           gap: 8px;
-          padding: 10px 12px;
+          padding: 8px;
           width: min(312px, calc(100vw - 24px));
           min-width: min(292px, calc(100vw - 24px));
           color: #e8eef5;
@@ -4113,7 +4120,6 @@
           overflow-y: auto;
           scrollbar-width: thin;
           scrollbar-color: rgba(143, 212, 242, 0.5) rgba(8, 14, 22, 0.35);
-          scrollbar-gutter: stable;
         }
         .panel::-webkit-scrollbar {
           width: 8px;
@@ -4138,11 +4144,16 @@
           display: flex;
           align-items: center;
           gap: 6px;
+          min-height: 28px;
           cursor: grab;
           touch-action: none;
         }
         .titlebar:active { cursor: grabbing; }
-        .titlebar h1 { flex: 1; }
+        .titlebar h1 { flex: 1; min-width: 0; }
+        .titlebar .icon {
+          flex-shrink: 0;
+          margin: 0;
+        }
         .fab {
           display: none;
           width: 52px;
@@ -4349,6 +4360,11 @@
           justify-content: center;
           gap: 6px;
           width: 100%;
+          max-width: 100%;
+          min-width: 0;
+          align-self: stretch;
+          flex: 0 0 auto;
+          box-sizing: border-box;
           color: #f0b4b4;
           border-color: rgba(200, 80, 80, 0.45);
           background: #2a1518;
@@ -4401,18 +4417,66 @@
           color: #e8eef5;
           font: 12px/1.2 Segoe UI, Tahoma, sans-serif;
         }
+        label.custom-color {
+          display: inline-flex;
+          align-items: center;
+          gap: 6px;
+          margin: 0;
+          padding: 3px 4px 3px 6px;
+          min-height: 28px;
+          border: 1px solid rgba(143, 212, 242, 0.35);
+          border-radius: 4px;
+          background: #142434;
+          color: #9fb3c4;
+          font: 700 10px/1 Segoe UI, Tahoma, sans-serif;
+          letter-spacing: 0.05em;
+          text-transform: uppercase;
+          cursor: pointer;
+        }
+        label.custom-color.active {
+          border-color: #8fd4f2;
+          color: #e8eef5;
+          box-shadow: 0 0 0 1px #8fd4f2;
+        }
+        label.custom-color svg {
+          width: 12px;
+          height: 12px;
+          display: block;
+          flex-shrink: 0;
+          pointer-events: none;
+        }
+        .custom-swatch-wrap {
+          position: relative;
+          width: 40px;
+          height: 22px;
+          flex-shrink: 0;
+        }
+        .custom-swatch {
+          display: block;
+          width: 100%;
+          height: 100%;
+          border-radius: 3px;
+          border: 2px solid rgba(232, 238, 245, 0.45);
+          pointer-events: none;
+        }
+        label.custom-color.active .custom-swatch {
+          border-color: #ffffff;
+        }
+        label.custom-color input[type="color"] {
+          position: absolute;
+          inset: 0;
+          width: 100%;
+          height: 100%;
+          margin: 0;
+          padding: 0;
+          opacity: 0;
+          border: 0;
+          cursor: pointer;
+        }
         .status {
           color: #9fb3c4;
           font-size: 11px;
           overflow-wrap: anywhere;
-        }
-        input[type="color"] {
-          width: 28px;
-          height: 22px;
-          padding: 0;
-          border: 0;
-          background: transparent;
-          cursor: pointer;
         }
         input[type="range"] { width: 90px; cursor: ew-resize; }
         textarea {
@@ -4525,7 +4589,14 @@
             (color) =>
               `<button class="swatch" type="button" data-color="${color}" title="${color}" style="background:${color}"></button>`
           ).join("")}
-          <input id="con-intel-color" type="color" value="${state.color}" title="Custom color">
+          <label class="custom-color" id="con-intel-custom-color" title="Pick a custom color">
+            ${ICO.dropper}
+            Custom
+            <span class="custom-swatch-wrap">
+              <span class="custom-swatch" id="con-intel-custom-swatch" style="background:${state.color}"></span>
+              <input id="con-intel-color" type="color" value="${state.color}" title="Custom color">
+            </span>
+          </label>
         </div>
         <div class="row">
           <label>Width <input id="con-intel-width" type="range" min="1" max="8" value="${state.width}"></label>
