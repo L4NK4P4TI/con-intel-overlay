@@ -11,8 +11,7 @@
   },
   "permissions": ["storage"],
   "host_permissions": [
-    "https://www.conflictnations.com/*",
-    "https://*.conflictnations.com/*"
+    "https://www.conflictnations.com/*"
   ],
   "action": {
     "default_title": "CoN Intel Overlay",
@@ -28,16 +27,14 @@
     {
       "resources": ["src/inject.js"],
       "matches": [
-        "https://www.conflictnations.com/*",
-        "https://*.conflictnations.com/*"
+        "https://www.conflictnations.com/*"
       ]
     }
   ],
   "content_scripts": [
     {
       "matches": [
-        "https://www.conflictnations.com/*",
-        "https://*.conflictnations.com/*"
+        "https://www.conflictnations.com/*"
       ],
       "js": ["src/content.js"],
       "all_frames": true,
