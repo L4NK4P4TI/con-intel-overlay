@@ -1,5 +1,5 @@
 (() => {
-  const VERSION = "1.3.0";
+  const VERSION = "1.3.1";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
   const FEATURE_TTL = false;
@@ -126,6 +126,7 @@
     textEditorHost: null,
     textMove: null,
     hoverStrokeId: null,
+    selectedStrokeId: null,
     lastRangeId: null,
     hoverRangeMode: null,
     pointerScreen: null,
@@ -1601,13 +1602,16 @@
           sticky: false,
         };
       }
+      if (findStrokeIndexAt(screen, surface) >= 0) return { cursor: "pointer", sticky: false };
       return { cursor: "crosshair", sticky: false };
     }
     if (state.tool === "measure" || state.tool === "arrow") {
       const handle = state.tool === "measure" ? findMeasureHandle(screen, surface) : findArrowHandle(screen, surface);
       if (handle) return { cursor: handle.mode === "move" ? "move" : "grab", sticky: false };
+      if (findStrokeIndexAt(screen, surface) >= 0) return { cursor: "pointer", sticky: false };
       return { cursor: "crosshair", sticky: false };
     }
+    if (findStrokeIndexAt(screen, surface) >= 0) return { cursor: "pointer", sticky: false };
     return { cursor: "crosshair", sticky: false };
   }
 
@@ -2642,7 +2646,12 @@
     const idx = findStrokeIndexAt(screen, state.overlay);
     if (idx < 0) return false;
     state.strokes.splice(idx, 1);
-    state.hoverStrokeId = null;
+    if (state.hoverStrokeId && !state.strokes.some((item) => item.id === state.hoverStrokeId)) {
+      state.hoverStrokeId = null;
+    }
+    if (state.selectedStrokeId && !state.strokes.some((item) => item.id === state.selectedStrokeId)) {
+      state.selectedStrokeId = null;
+    }
     scheduleSave();
     updateStatus();
     return true;
@@ -2688,6 +2697,10 @@
       state.hoverStrokeId = findMeasureHandle(state.pointerScreen, overlay)?.id || null;
     } else if (state.tool === "arrow" && state.altHeld && state.pointerScreen && !state.draft) {
       state.hoverStrokeId = findArrowHandle(state.pointerScreen, overlay)?.id || null;
+    } else if (state.altHeld && state.pointerScreen && !state.draft) {
+      const idx = findStrokeIndexAt(state.pointerScreen, overlay);
+      state.hoverStrokeId = idx >= 0 ? state.strokes[idx].id : null;
+      state.hoverRangeMode = null;
     } else if (state.tool !== "eraser") {
       state.hoverStrokeId = null;
       state.hoverRangeMode = null;
@@ -2696,7 +2709,7 @@
     syncMapCursor();
     for (const stroke of state.strokes) {
       if (state.textEdit?.id && stroke.id === state.textEdit.id) continue;
-      if (stroke.id === state.hoverStrokeId) {
+      if (stroke.id === state.hoverStrokeId || stroke.id === state.selectedStrokeId) {
         ctx.save();
         ctx.shadowColor = "rgba(255, 224, 130, 0.95)";
         ctx.shadowBlur = 18;
@@ -2815,6 +2828,7 @@
     if (state.draft.points.length) {
       if (state.draft.type === "range") state.lastRangeId = state.draft.id;
       state.strokes.push(state.draft);
+      state.selectedStrokeId = state.draft.id;
     }
     state.draft = null;
     scheduleSave();
@@ -2829,6 +2843,7 @@
         value: existing.label || "",
         id: existing.id,
       };
+      selectStroke(existing, false);
       ensureTextEditor();
       const input = state.textEditorHost.shadowRoot.querySelector("textarea");
       input.value = existing.label || "";
@@ -2842,19 +2857,22 @@
     }
     const preset = ui("#con-intel-label")?.value?.trim() || "";
     if (preset) {
-      state.strokes.push({
+      const note = {
         id: uid(),
         type: "text",
         color: state.color,
         width: state.width,
         points: [mapPos],
         label: preset,
-      });
+      };
+      state.strokes.push(note);
+      selectStroke(note, false);
       scheduleSave();
       updateStatus();
       return;
     }
     cancelTextEdit();
+    selectStroke(null);
     state.textEdit = { mapPos, value: "" };
     ensureTextEditor();
     const input = state.textEditorHost.shadowRoot.querySelector("textarea");
@@ -3366,9 +3384,9 @@
       const mapPos = pointerMapPos(event, surface);
       if (!mapPos) return;
       state.pointerScreen = eventToScreen(event, surface);
-      if (state.tool === "marker") {
-        startDraft(mapPos);
-        finishDraft();
+      if (state.tool === "eraser") {
+        state.erasing = true;
+        eraseAtScreen(eventToScreen(event, surface));
         syncMapCursor();
         return;
       }
@@ -3376,6 +3394,7 @@
         const hit = findTextHit(eventToScreen(event, surface), surface);
         if (hit) {
           const stroke = state.strokes[hit.index];
+          selectStroke(stroke);
           state.textMove = {
             id: stroke.id,
             mode: hit.mode,
@@ -3387,20 +3406,12 @@
           syncMapCursor();
           return;
         }
-        beginTextEdit(mapPos);
-        syncMapCursor();
-        return;
-      }
-      if (state.tool === "eraser") {
-        state.erasing = true;
-        eraseAtScreen(eventToScreen(event, surface));
-        syncMapCursor();
-        return;
       }
       if (state.tool === "range") {
         const handle = findRangeHandle(eventToScreen(event, surface), surface);
         if (handle) {
           const stroke = state.strokes[handle.index];
+          selectStroke(stroke);
           const valueMode = rangeValueMode(handle.mode);
           const now = performance.now();
           const tap = state._rangeTap;
@@ -3437,6 +3448,7 @@
         }
         const overRange = findStrokeIndexAt(eventToScreen(event, surface), surface);
         if (overRange >= 0 && state.strokes[overRange].type === "range") {
+          selectStroke(state.strokes[overRange]);
           syncMapCursor();
           return;
         }
@@ -3448,6 +3460,7 @@
             : findArrowHandle(eventToScreen(event, surface), surface);
         if (handle) {
           const stroke = state.strokes[handle.index];
+          selectStroke(stroke);
           state.measureEdit = {
             id: stroke.id,
             mode: handle.mode,
@@ -3460,6 +3473,24 @@
           syncMapCursor();
           return;
         }
+      }
+      const hitIdx = findStrokeIndexAt(state.pointerScreen, surface);
+      if (hitIdx >= 0) {
+        selectStroke(state.strokes[hitIdx]);
+        syncMapCursor();
+        return;
+      }
+      selectStroke(null);
+      if (state.tool === "marker") {
+        startDraft(mapPos);
+        finishDraft();
+        syncMapCursor();
+        return;
+      }
+      if (state.tool === "text") {
+        beginTextEdit(mapPos);
+        syncMapCursor();
+        return;
       }
       startDraft(mapPos);
       syncMapCursor();
@@ -3730,12 +3761,35 @@
     );
   }
 
-  function setColor(color) {
+  function selectStroke(stroke, syncColor = true) {
+    state.selectedStrokeId = stroke?.id || null;
+    if (stroke?.type === "range") state.lastRangeId = stroke.id;
+    if (stroke?.color && syncColor) setColor(stroke.color, false);
+    updateStatus();
+  }
+
+  function recolorSelectedStroke(color) {
+    if (!color || !state.selectedStrokeId) return false;
+    const stroke = state.strokes.find((item) => item.id === state.selectedStrokeId);
+    if (!stroke) {
+      state.selectedStrokeId = null;
+      return false;
+    }
+    if (String(stroke.color || "").toLowerCase() === String(color).toLowerCase()) return false;
+    stroke.color = color;
+    scheduleSave();
+    updateStatus();
+    return true;
+  }
+
+  function setColor(color, recolorSelected = true) {
     state.color = color;
     const picker = ui("#con-intel-color");
     if (picker) picker.value = color;
     const swatch = ui("#con-intel-custom-swatch");
     if (swatch) swatch.style.background = color;
+    if (state.draft) state.draft.color = color;
+    if (recolorSelected) recolorSelectedStroke(color);
     syncPalette();
   }
 
@@ -3754,8 +3808,9 @@
   function updateStatus() {
     const el = ui("#con-intel-status");
     if (!el) return;
-    const action =
-      state.tool === "eraser"
+    const action = state.selectedStrokeId
+      ? "Color the selected mark · Alt-click another, or empty map to draw"
+      : state.tool === "eraser"
         ? "Hold Alt + click a mark"
         : state.tool === "measure"
           ? state.draft?.mode === "route" || state.measureMode === "route"
@@ -3766,12 +3821,12 @@
               ? "Alt-click waypoints · right-click to finish · Alt-click a tip to cycle that head"
               : "Alt-drag · Alt-click a tip to cycle that head"
           : state.tool === "range"
-          ? "Type km in C/R/S · Alt-click a label · drag rings"
-          : state.tool === "marker"
-            ? "Pick an icon · Alt-click to stamp"
-          : state.tool === "text"
-            ? "Alt-click to type · Alt-click a note to edit · drag the pin to move"
-            : "Hold Alt + drag";
+            ? "Type km in C/R/S · Alt-click a label · drag rings"
+            : state.tool === "marker"
+              ? "Pick an icon · Alt-click to stamp"
+              : state.tool === "text"
+                ? "Alt-click to type · Alt-click a note to edit · drag the pin to move"
+                : "Hold Alt + drag";
     el.textContent = `${getMapApi()?.kind || "?"} · ${state.gameId} · ${action} · ${state.strokes.length}`;
   }
 
@@ -4396,7 +4451,9 @@
           flex-wrap: wrap;
           align-items: center;
           gap: 5px;
+          width: 100%;
         }
+        .palette .hint { color: #7f93a6; font-size: 10px; width: 100%; }
         button.swatch {
           width: 22px;
           height: 22px;
@@ -4515,7 +4572,7 @@
           <span class="split"></span>
           <button id="con-intel-eraser" class="tool eraser" type="button" title="Eraser (Alt+7)">${ICO.eraser} Eraser</button>
         </div>
-        <div class="kbd">Alt+1–7 tools · hold Alt and click the map to draw</div>
+        <div class="kbd">Alt+1–7 tools · hold Alt and click the map to draw · Alt-click a mark, then a color to recolor it</div>
         <div id="con-intel-arrow-wrap" class="nav-opts" hidden>
           <button id="con-intel-arrow-seg" class="tool active" type="button" title="Two-point arrow">Segment</button>
           <button id="con-intel-arrow-route" class="tool" type="button" title="Click waypoints, right-click to finish">Route</button>
@@ -4597,6 +4654,7 @@
               <input id="con-intel-color" type="color" value="${state.color}" title="Custom color">
             </span>
           </label>
+          <div class="hint">Alt-click a mark, then a color to recolor it</div>
         </div>
         <div class="row">
           <label>Width <input id="con-intel-width" type="range" min="1" max="8" value="${state.width}"></label>
@@ -4752,6 +4810,9 @@
     };
     ui("#con-intel-undo").onclick = () => {
       state.strokes.pop();
+      if (state.selectedStrokeId && !state.strokes.some((item) => item.id === state.selectedStrokeId)) {
+        state.selectedStrokeId = null;
+      }
       scheduleSave();
       updateStatus();
     };
@@ -4759,6 +4820,7 @@
       if (!state.strokes.length) return;
       if (!confirm("Clear ALL intel marks in this match? This is not the eraser.")) return;
       state.strokes = [];
+      state.selectedStrokeId = null;
       scheduleSave();
       updateStatus();
     };
@@ -4827,9 +4889,15 @@
         cancelRangeValueEdit();
         updateStatus();
         syncMapCursor();
+      } else if (event.key === "Escape" && state.selectedStrokeId) {
+        selectStroke(null);
+        syncMapCursor();
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
         state.strokes.pop();
+        if (state.selectedStrokeId && !state.strokes.some((item) => item.id === state.selectedStrokeId)) {
+          state.selectedStrokeId = null;
+        }
         scheduleSave();
         updateStatus();
       }

@@ -27,7 +27,7 @@ Sideload from this repo: [github.com/L4NK4P4TI/con-intel-overlay](https://github
 4. Select this folder
 5. Open a match on [conflictnations.com](https://www.conflictnations.com/) and **refresh** the tab after reloading the extension.
 
-The toolbar shows the version, e.g. `Intel overlay v1.3.0`, plus `modern` or `legacy`. If you do not see that number, Chrome still has an old build loaded.
+The toolbar shows the version, e.g. `Intel overlay v1.3.1`, plus `modern` or `legacy`. If you do not see that number, Chrome still has an old build loaded.
 
 A panel labeled **Intel overlay** appears on the map.
 
@@ -44,7 +44,7 @@ A panel labeled **Intel overlay** appears on the map.
 - **Measure** — Alt-drag between two points to show distance in km. Uses the same map-space scale as Range (the camera tilt is only in the projection). Drag either end to adjust, or the line to move. Shortcut **Alt+6**. **Route** mode Alt-clicks waypoints and sums the path; right-click finishes. Terrain TTL / Air timing is in the code but **off** until it is accurate enough to ship.
 - **Eraser** — Alt-click a mark to delete it, or Alt-drag across several. The hovered stroke highlights first. Shortcut **Alt+7**. Separate from **Clear all** (trash), which wipes every mark in the match.
 - Tools are icon buttons: **Alt+1** Pen, **Alt+2** Arrow, **Alt+3** Marker, **Alt+4** Text, **Alt+5** Range, **Alt+6** Measure, **Alt+7** Eraser. **Alt+H** hides marks. Hover an icon for its name.
-- Click a color swatch to switch quickly, or use **Custom** (dropper) to pick any color.
+- Click a color swatch to switch quickly, or use **Custom** (dropper) to pick any color. Alt-click an existing mark to select it, then pick a color to recolor it.
 - **Export** / **Import** — download a `.json` sketch and send it to teammates. They import it in the **same match** so marks land on the same terrain. Import merges and skips duplicates.
 - Drag the panel title to move it. Collapse (minus) shrinks it to a floating **Intel** button; drag or tap that button to restore.
 - `Esc` — cancel the stroke or text in progress
@@ -54,7 +54,7 @@ Strokes are saved per match in `chrome.storage.local`.
 
 ## Chrome Web Store
 
-Listing copy, original icons, and a pack script live in `store/`. Run `.\store\pack.ps1` to build `dist/con-intel-overlay-1.3.0.zip`. See `store/LISTING.md`.
+Listing copy, original icons, and a pack script live in `store/`. Run `.\store\pack.ps1` to build `dist/con-intel-overlay-1.3.1.zip`. See `store/LISTING.md`.
 
 ## How it stays geo-locked
 

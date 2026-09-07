@@ -6,7 +6,7 @@ This extension is **unofficial** and must stay that way in the listing. Do not u
 
 ## Item ID / package
 
-Upload `dist/con-intel-overlay-1.3.0.zip` after running `.\store\pack.ps1`.
+Upload `dist/con-intel-overlay-1.3.1.zip` after running `.\store\pack.ps1`.
 
 ## Product name (max 45 characters)
 
@@ -50,7 +50,7 @@ TOOLS
 • Range — Reach (combat + radar/sight hub stays inside combat) or Radar+Sight; type km in C/R/S fields or Alt-click a label; drag rings to resize; one R and one S label; combat also shows C at the center when in view
 • Measure — Alt-drag two points to read distance in km. Drag the ends or the line to edit. Route mode clicks waypoints and sums the path
 • Eraser — Alt-click a mark to delete it
-• Color palette — switch colors in one click, or Custom (dropper) for any color
+• Color palette — switch colors in one click, or Custom (dropper) for any color. Alt-click a mark, then a color to recolor it
 • Export / Import — send sketches as a file; import merges and skips duplicates
 
 WORKS ON
