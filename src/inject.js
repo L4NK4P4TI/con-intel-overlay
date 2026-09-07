@@ -2,7 +2,15 @@
   const VERSION = "1.3.1";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
+  const BUS_ORIGIN = window.location.origin;
+  const BUS_TOKEN = document.currentScript?.dataset?.conIntelToken || "";
+
+  function postBus(payload) {
+    if (!BUS_TOKEN) return;
+    window.postMessage({ source: SOURCE, token: BUS_TOKEN, ...payload }, BUS_ORIGIN);
+  }
   const FEATURE_TTL = false;
+  const DEBUG = false;
   const LINE_STYLES = [
     { id: "solid", label: "Solid", dash: [] },
     { id: "dash", label: "Dash", dash: [9, 6] },
@@ -105,7 +113,9 @@
     min: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.5 8h9"/></svg>`,
     dropper: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 2.8 13.2 6.8"/><path d="M11.6 1.8 14.2 4.4a1.2 1.2 0 0 1 0 1.7l-1.1 1.1-4.4-4.4 1.1-1.1a1.2 1.2 0 0 1 1.8.1z"/><path d="M8.8 5.2 3.4 10.6 2.5 13.5l2.9-.9 5.4-5.4"/></svg>`,
   };
-  const LOG = (...args) => console.info("[con-intel]", ...args);
+  const LOG = (...args) => {
+    if (DEBUG) console.info("[con-intel]", ...args);
+  };
 
   LOG("page script loaded", VERSION, location.href, { ttl: FEATURE_TTL });
 
@@ -124,6 +134,7 @@
     saveTimer: 0,
     textEdit: null,
     textEditorHost: null,
+    textEditorRoot: null,
     textMove: null,
     hoverStrokeId: null,
     selectedStrokeId: null,
@@ -136,6 +147,7 @@
     rangeEdit: null,
     rangeValueEdit: null,
     rangeValueHost: null,
+    rangeValueRoot: null,
     measureEdit: null,
     measureMode: "segment",
     arrowMode: "segment",
@@ -1172,54 +1184,50 @@
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  function sanitizeColor(color, fallback = "#ff4d4d") {
+    return typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color) ? color : fallback;
+  }
+
   function scheduleSave() {
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(() => {
       if (!state.gameId) return;
-      window.postMessage(
-        {
-          source: SOURCE,
-          type: "save",
-          gameId: state.gameId,
-          strokes: state.strokes,
-        },
-        "*"
-      );
+      postBus({
+        type: "save",
+        gameId: state.gameId,
+        strokes: state.strokes,
+      });
     }, 250);
   }
 
   function scheduleSaveUi() {
     clearTimeout(state.uiSaveTimer);
     state.uiSaveTimer = setTimeout(() => {
-      window.postMessage(
-        {
-          source: SOURCE,
-          type: "save-ui",
-          ui: {
-            left: state.panelLeft,
-            top: state.panelTop,
-            collapsed: state.panelCollapsed,
-            expandedLeft: state.expandedLeft,
-            expandedTop: state.expandedTop,
-            dockCorner: state.dockCorner,
-            measureMode: state.measureMode,
-            arrowMode: state.arrowMode,
-            arrowHeadStart: normalizeHeadStyle(state.arrowHeadStart, "none"),
-            arrowHeadEnd: normalizeHeadStyle(state.arrowHeadEnd, "arrow"),
-            lineStyle: normalizeLineStyle(state.lineStyle),
-            markerIcon: normalizeMarkerIcon(state.markerIcon),
-            travelMode: state.travelMode,
-            speedMultiplier: state.speedMultiplier,
-            speedVals: { ...state.speedVals },
-          },
+      postBus({
+        type: "save-ui",
+        ui: {
+          left: state.panelLeft,
+          top: state.panelTop,
+          collapsed: state.panelCollapsed,
+          expandedLeft: state.expandedLeft,
+          expandedTop: state.expandedTop,
+          dockCorner: state.dockCorner,
+          measureMode: state.measureMode,
+          arrowMode: state.arrowMode,
+          arrowHeadStart: normalizeHeadStyle(state.arrowHeadStart, "none"),
+          arrowHeadEnd: normalizeHeadStyle(state.arrowHeadEnd, "arrow"),
+          lineStyle: normalizeLineStyle(state.lineStyle),
+          markerIcon: normalizeMarkerIcon(state.markerIcon),
+          travelMode: state.travelMode,
+          speedMultiplier: state.speedMultiplier,
+          speedVals: { ...state.speedVals },
         },
-        "*"
-      );
+      });
     }, 200);
   }
 
   function loadStrokes() {
-    window.postMessage({ source: SOURCE, type: "load", gameId: state.gameId }, "*");
+    postBus({ type: "load", gameId: state.gameId });
   }
 
   function sanitizeStrokes(raw) {
@@ -1229,14 +1237,23 @@
     for (const item of raw) {
       if (!item || typeof item !== "object") continue;
       if (!types.has(item.type) || !Array.isArray(item.points)) continue;
+      const maxPoints =
+        item.type === "arrow" || item.type === "measure"
+          ? item.mode === "route"
+            ? 80
+            : 2
+          : item.type === "text" || item.type === "marker" || item.type === "range"
+            ? 2
+            : 2000;
       const points = item.points
         .filter((p) => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)))
-        .map((p) => ({ x: Number(p.x), y: Number(p.y) }));
+        .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+        .slice(0, maxPoints);
       if (!points.length) continue;
       const stroke = {
         id: typeof item.id === "string" && item.id ? item.id : uid(),
         type: item.type,
-        color: typeof item.color === "string" && /^#[0-9a-fA-F]{6}$/.test(item.color) ? item.color : "#ff4d4d",
+        color: sanitizeColor(item.color),
         width: Math.min(8, Math.max(1, Number(item.width) || 3)),
         points,
       };
@@ -1314,7 +1331,7 @@
     const strokes = sanitizeStrokes(data.strokes);
     if (!strokes.length && !Array.isArray(data.strokes)) throw new Error("Not a CoN Intel sketch file");
     return {
-      gameId: data.gameId != null && String(data.gameId) ? String(data.gameId) : null,
+      gameId: data.gameId != null && String(data.gameId) ? String(data.gameId).slice(0, 32) : null,
       strokes,
     };
   }
@@ -1360,6 +1377,10 @@
 
   function importSketchFile(file) {
     if (!file) return;
+    if (file.size > 2_000_000) {
+      window.alert("That file is too large to import.");
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       try {
@@ -1407,7 +1428,7 @@
 
   function markerIconSvg(id, color) {
     const row = MARKER_ICONS.find((item) => item.id === normalizeMarkerIcon(id));
-    const stroke = color || "currentColor";
+    const stroke = color ? sanitizeColor(color) : "currentColor";
     const filled = String(row.body).replace(/currentColor/g, stroke);
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${filled}</svg>`;
   }
@@ -1420,6 +1441,7 @@
 
   function markerIconImage(id, color) {
     const icon = normalizeMarkerIcon(id);
+    color = sanitizeColor(color);
     const key = `${icon}|${color}`;
     let img = markerImgCache.get(key);
     if (img) return img;
@@ -2845,7 +2867,7 @@
       };
       selectStroke(existing, false);
       ensureTextEditor();
-      const input = state.textEditorHost.shadowRoot.querySelector("textarea");
+      const input = state.textEditorRoot.querySelector("textarea");
       input.value = existing.label || "";
       input.style.height = "";
       syncTextEditor();
@@ -2875,7 +2897,7 @@
     selectStroke(null);
     state.textEdit = { mapPos, value: "" };
     ensureTextEditor();
-    const input = state.textEditorHost.shadowRoot.querySelector("textarea");
+    const input = state.textEditorRoot.querySelector("textarea");
     input.value = "";
     input.style.height = "";
     syncTextEditor();
@@ -2927,7 +2949,7 @@
     }
     const host = document.createElement("div");
     host.id = "con-intel-text-host";
-    const root = host.attachShadow({ mode: "open" });
+    const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host { all: initial; }
@@ -3015,6 +3037,7 @@
     });
     document.body.appendChild(host);
     state.textEditorHost = host;
+    state.textEditorRoot = root;
   }
 
   function syncTextEditor() {
@@ -3133,8 +3156,8 @@
       anchorMap: anchorMap && Number.isFinite(anchorMap.x) ? anchorMap : null,
     };
     ensureRangeValueEditor();
-    const input = state.rangeValueHost.shadowRoot.querySelector("input");
-    const title = state.rangeValueHost.shadowRoot.querySelector(".kind");
+    const input = state.rangeValueRoot.querySelector("input");
+    const title = state.rangeValueRoot.querySelector(".kind");
     if (title) title.textContent = which === "combat" ? "Combat km" : which === "radar" ? "Radar km" : "Sight km";
     input.value = state.rangeValueEdit.value;
     syncRangeValueEditor();
@@ -3145,7 +3168,7 @@
   }
 
   function focusRangeValueInput() {
-    const input = state.rangeValueHost?.shadowRoot?.querySelector("input");
+    const input = state.rangeValueRoot?.querySelector("input");
     if (!input || !state.rangeValueEdit) return;
     try {
       input.focus({ preventScroll: true });
@@ -3181,7 +3204,7 @@
     }
     const host = document.createElement("div");
     host.id = "con-intel-range-value-host";
-    const root = host.attachShadow({ mode: "open" });
+    const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host { all: initial; }
@@ -3267,6 +3290,7 @@
     });
     document.body.appendChild(host);
     state.rangeValueHost = host;
+    state.rangeValueRoot = root;
   }
 
   function syncRangeValueEditor() {
@@ -3769,6 +3793,7 @@
   }
 
   function recolorSelectedStroke(color) {
+    color = sanitizeColor(color, "");
     if (!color || !state.selectedStrokeId) return false;
     const stroke = state.strokes.find((item) => item.id === state.selectedStrokeId);
     if (!stroke) {
@@ -3783,6 +3808,7 @@
   }
 
   function setColor(color, recolorSelected = true) {
+    color = sanitizeColor(color, state.color);
     state.color = color;
     const picker = ui("#con-intel-color");
     if (picker) picker.value = color;
@@ -4150,7 +4176,7 @@
   function createToolbar() {
     const host = document.createElement("div");
     host.id = "con-intel-host";
-    const root = host.attachShadow({ mode: "open" });
+    const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host { all: initial; }
@@ -4835,7 +4861,7 @@
     applyPanelLayout();
     syncNavUi();
     host.classList.add("no-motion");
-    window.postMessage({ source: SOURCE, type: "load-ui" }, "*");
+    postBus({ type: "load-ui" });
     requestAnimationFrame(() => host.classList.remove("no-motion"));
 
     window.addEventListener(
@@ -4906,8 +4932,9 @@
 
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
+    if (event.origin !== BUS_ORIGIN) return;
     const msg = event.data;
-    if (!msg || msg.source !== SOURCE) return;
+    if (!msg || msg.source !== SOURCE || !BUS_TOKEN || msg.token !== BUS_TOKEN) return;
     if (msg.type === "loaded-ui") {
       const uiState = msg.ui && typeof msg.ui === "object" ? msg.ui : null;
       if (uiState) {
@@ -4960,7 +4987,7 @@
     }
     if (msg.type !== "loaded") return;
     if (String(msg.gameId) !== String(state.gameId)) return;
-    state.strokes = Array.isArray(msg.strokes) ? msg.strokes : [];
+    state.strokes = sanitizeStrokes(msg.strokes);
     updateStatus();
   });
 
@@ -4978,7 +5005,7 @@
     LOG("waiting for map API");
     const { api, container, canvas } = await waitForMap();
     LOG("map found", api.kind, canvas && canvas.width, canvas && canvas.height);
-    discoverPathApi();
+    if (FEATURE_TTL) discoverPathApi();
     state.gameId = getGameId() || "unknown";
 
     const overlay = document.createElement("canvas");
