@@ -5005,7 +5005,7 @@
     LOG("waiting for map API");
     const { api, container, canvas } = await waitForMap();
     LOG("map found", api.kind, canvas && canvas.width, canvas && canvas.height);
-    discoverPathApi();
+    if (FEATURE_TTL) discoverPathApi();
     state.gameId = getGameId() || "unknown";
 
     const overlay = document.createElement("canvas");
