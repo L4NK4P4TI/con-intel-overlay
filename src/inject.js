@@ -10,6 +10,7 @@
     window.postMessage({ source: SOURCE, token: BUS_TOKEN, ...payload }, BUS_ORIGIN);
   }
   const FEATURE_TTL = false;
+  const DEBUG = false;
   const LINE_STYLES = [
     { id: "solid", label: "Solid", dash: [] },
     { id: "dash", label: "Dash", dash: [9, 6] },
@@ -112,7 +113,9 @@
     min: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M3.5 8h9"/></svg>`,
     dropper: `<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M9.2 2.8 13.2 6.8"/><path d="M11.6 1.8 14.2 4.4a1.2 1.2 0 0 1 0 1.7l-1.1 1.1-4.4-4.4 1.1-1.1a1.2 1.2 0 0 1 1.8.1z"/><path d="M8.8 5.2 3.4 10.6 2.5 13.5l2.9-.9 5.4-5.4"/></svg>`,
   };
-  const LOG = (...args) => console.info("[con-intel]", ...args);
+  const LOG = (...args) => {
+    if (DEBUG) console.info("[con-intel]", ...args);
+  };
 
   LOG("page script loaded", VERSION, location.href, { ttl: FEATURE_TTL });
 
