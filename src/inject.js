@@ -1232,9 +1232,18 @@
     for (const item of raw) {
       if (!item || typeof item !== "object") continue;
       if (!types.has(item.type) || !Array.isArray(item.points)) continue;
+      const maxPoints =
+        item.type === "arrow" || item.type === "measure"
+          ? item.mode === "route"
+            ? 80
+            : 2
+          : item.type === "text" || item.type === "marker" || item.type === "range"
+            ? 2
+            : 2000;
       const points = item.points
         .filter((p) => p && Number.isFinite(Number(p.x)) && Number.isFinite(Number(p.y)))
-        .map((p) => ({ x: Number(p.x), y: Number(p.y) }));
+        .map((p) => ({ x: Number(p.x), y: Number(p.y) }))
+        .slice(0, maxPoints);
       if (!points.length) continue;
       const stroke = {
         id: typeof item.id === "string" && item.id ? item.id : uid(),
@@ -1317,7 +1326,7 @@
     const strokes = sanitizeStrokes(data.strokes);
     if (!strokes.length && !Array.isArray(data.strokes)) throw new Error("Not a CoN Intel sketch file");
     return {
-      gameId: data.gameId != null && String(data.gameId) ? String(data.gameId) : null,
+      gameId: data.gameId != null && String(data.gameId) ? String(data.gameId).slice(0, 32) : null,
       strokes,
     };
   }
@@ -1363,6 +1372,10 @@
 
   function importSketchFile(file) {
     if (!file) return;
+    if (file.size > 2_000_000) {
+      window.alert("That file is too large to import.");
+      return;
+    }
     const reader = new FileReader();
     reader.onload = () => {
       try {
