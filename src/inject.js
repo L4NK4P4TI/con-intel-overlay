@@ -134,6 +134,7 @@
     saveTimer: 0,
     textEdit: null,
     textEditorHost: null,
+    textEditorRoot: null,
     textMove: null,
     hoverStrokeId: null,
     selectedStrokeId: null,
@@ -146,6 +147,7 @@
     rangeEdit: null,
     rangeValueEdit: null,
     rangeValueHost: null,
+    rangeValueRoot: null,
     measureEdit: null,
     measureMode: "segment",
     arrowMode: "segment",
@@ -2865,7 +2867,7 @@
       };
       selectStroke(existing, false);
       ensureTextEditor();
-      const input = state.textEditorHost.shadowRoot.querySelector("textarea");
+      const input = state.textEditorRoot.querySelector("textarea");
       input.value = existing.label || "";
       input.style.height = "";
       syncTextEditor();
@@ -2895,7 +2897,7 @@
     selectStroke(null);
     state.textEdit = { mapPos, value: "" };
     ensureTextEditor();
-    const input = state.textEditorHost.shadowRoot.querySelector("textarea");
+    const input = state.textEditorRoot.querySelector("textarea");
     input.value = "";
     input.style.height = "";
     syncTextEditor();
@@ -2947,7 +2949,7 @@
     }
     const host = document.createElement("div");
     host.id = "con-intel-text-host";
-    const root = host.attachShadow({ mode: "open" });
+    const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host { all: initial; }
@@ -3035,6 +3037,7 @@
     });
     document.body.appendChild(host);
     state.textEditorHost = host;
+    state.textEditorRoot = root;
   }
 
   function syncTextEditor() {
@@ -3153,8 +3156,8 @@
       anchorMap: anchorMap && Number.isFinite(anchorMap.x) ? anchorMap : null,
     };
     ensureRangeValueEditor();
-    const input = state.rangeValueHost.shadowRoot.querySelector("input");
-    const title = state.rangeValueHost.shadowRoot.querySelector(".kind");
+    const input = state.rangeValueRoot.querySelector("input");
+    const title = state.rangeValueRoot.querySelector(".kind");
     if (title) title.textContent = which === "combat" ? "Combat km" : which === "radar" ? "Radar km" : "Sight km";
     input.value = state.rangeValueEdit.value;
     syncRangeValueEditor();
@@ -3165,7 +3168,7 @@
   }
 
   function focusRangeValueInput() {
-    const input = state.rangeValueHost?.shadowRoot?.querySelector("input");
+    const input = state.rangeValueRoot?.querySelector("input");
     if (!input || !state.rangeValueEdit) return;
     try {
       input.focus({ preventScroll: true });
@@ -3201,7 +3204,7 @@
     }
     const host = document.createElement("div");
     host.id = "con-intel-range-value-host";
-    const root = host.attachShadow({ mode: "open" });
+    const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host { all: initial; }
@@ -3287,6 +3290,7 @@
     });
     document.body.appendChild(host);
     state.rangeValueHost = host;
+    state.rangeValueRoot = root;
   }
 
   function syncRangeValueEditor() {
@@ -4172,7 +4176,7 @@
   function createToolbar() {
     const host = document.createElement("div");
     host.id = "con-intel-host";
-    const root = host.attachShadow({ mode: "open" });
+    const root = host.attachShadow({ mode: "closed" });
     root.innerHTML = `
       <style>
         :host { all: initial; }
