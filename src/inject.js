@@ -4960,7 +4960,7 @@
     }
     if (msg.type !== "loaded") return;
     if (String(msg.gameId) !== String(state.gameId)) return;
-    state.strokes = Array.isArray(msg.strokes) ? msg.strokes : [];
+    state.strokes = sanitizeStrokes(msg.strokes);
     updateStatus();
   });
 
