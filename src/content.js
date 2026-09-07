@@ -70,14 +70,16 @@ function extensionStorage() {
   }
 }
 
+let pageScriptInjected = false;
+
 function injectPageScript() {
-  if (document.documentElement?.dataset.conIntelInjected === "1") return;
+  if (pageScriptInjected) return;
   try {
     if (typeof chrome === "undefined" || !chrome.runtime?.getURL) return;
   } catch (_err) {
     return;
   }
-  if (document.documentElement) document.documentElement.dataset.conIntelInjected = "1";
+  pageScriptInjected = true;
 
   const script = document.createElement("script");
   script.src = chrome.runtime.getURL("src/inject.js");
