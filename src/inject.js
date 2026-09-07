@@ -1179,6 +1179,10 @@
     return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
   }
 
+  function sanitizeColor(color, fallback = "#ff4d4d") {
+    return typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color) ? color : fallback;
+  }
+
   function scheduleSave() {
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(() => {
@@ -1235,7 +1239,7 @@
       const stroke = {
         id: typeof item.id === "string" && item.id ? item.id : uid(),
         type: item.type,
-        color: typeof item.color === "string" && /^#[0-9a-fA-F]{6}$/.test(item.color) ? item.color : "#ff4d4d",
+        color: sanitizeColor(item.color),
         width: Math.min(8, Math.max(1, Number(item.width) || 3)),
         points,
       };
@@ -1406,7 +1410,7 @@
 
   function markerIconSvg(id, color) {
     const row = MARKER_ICONS.find((item) => item.id === normalizeMarkerIcon(id));
-    const stroke = color || "currentColor";
+    const stroke = color ? sanitizeColor(color) : "currentColor";
     const filled = String(row.body).replace(/currentColor/g, stroke);
     return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="${stroke}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">${filled}</svg>`;
   }
@@ -1419,6 +1423,7 @@
 
   function markerIconImage(id, color) {
     const icon = normalizeMarkerIcon(id);
+    color = sanitizeColor(color);
     const key = `${icon}|${color}`;
     let img = markerImgCache.get(key);
     if (img) return img;
@@ -3768,6 +3773,7 @@
   }
 
   function recolorSelectedStroke(color) {
+    color = sanitizeColor(color, "");
     if (!color || !state.selectedStrokeId) return false;
     const stroke = state.strokes.find((item) => item.id === state.selectedStrokeId);
     if (!stroke) {
@@ -3782,6 +3788,7 @@
   }
 
   function setColor(color, recolorSelected = true) {
+    color = sanitizeColor(color, state.color);
     state.color = color;
     const picker = ui("#con-intel-color");
     if (picker) picker.value = color;
