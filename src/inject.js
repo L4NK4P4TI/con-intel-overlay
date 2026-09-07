@@ -2,6 +2,13 @@
   const VERSION = "1.3.1";
   const SOURCE = "con-intel-overlay";
   const FORMAT = "con-intel-overlay";
+  const BUS_ORIGIN = window.location.origin;
+  const BUS_TOKEN = document.currentScript?.dataset?.conIntelToken || "";
+
+  function postBus(payload) {
+    if (!BUS_TOKEN) return;
+    window.postMessage({ source: SOURCE, token: BUS_TOKEN, ...payload }, BUS_ORIGIN);
+  }
   const FEATURE_TTL = false;
   const LINE_STYLES = [
     { id: "solid", label: "Solid", dash: [] },
@@ -1176,50 +1183,42 @@
     clearTimeout(state.saveTimer);
     state.saveTimer = setTimeout(() => {
       if (!state.gameId) return;
-      window.postMessage(
-        {
-          source: SOURCE,
-          type: "save",
-          gameId: state.gameId,
-          strokes: state.strokes,
-        },
-        "*"
-      );
+      postBus({
+        type: "save",
+        gameId: state.gameId,
+        strokes: state.strokes,
+      });
     }, 250);
   }
 
   function scheduleSaveUi() {
     clearTimeout(state.uiSaveTimer);
     state.uiSaveTimer = setTimeout(() => {
-      window.postMessage(
-        {
-          source: SOURCE,
-          type: "save-ui",
-          ui: {
-            left: state.panelLeft,
-            top: state.panelTop,
-            collapsed: state.panelCollapsed,
-            expandedLeft: state.expandedLeft,
-            expandedTop: state.expandedTop,
-            dockCorner: state.dockCorner,
-            measureMode: state.measureMode,
-            arrowMode: state.arrowMode,
-            arrowHeadStart: normalizeHeadStyle(state.arrowHeadStart, "none"),
-            arrowHeadEnd: normalizeHeadStyle(state.arrowHeadEnd, "arrow"),
-            lineStyle: normalizeLineStyle(state.lineStyle),
-            markerIcon: normalizeMarkerIcon(state.markerIcon),
-            travelMode: state.travelMode,
-            speedMultiplier: state.speedMultiplier,
-            speedVals: { ...state.speedVals },
-          },
+      postBus({
+        type: "save-ui",
+        ui: {
+          left: state.panelLeft,
+          top: state.panelTop,
+          collapsed: state.panelCollapsed,
+          expandedLeft: state.expandedLeft,
+          expandedTop: state.expandedTop,
+          dockCorner: state.dockCorner,
+          measureMode: state.measureMode,
+          arrowMode: state.arrowMode,
+          arrowHeadStart: normalizeHeadStyle(state.arrowHeadStart, "none"),
+          arrowHeadEnd: normalizeHeadStyle(state.arrowHeadEnd, "arrow"),
+          lineStyle: normalizeLineStyle(state.lineStyle),
+          markerIcon: normalizeMarkerIcon(state.markerIcon),
+          travelMode: state.travelMode,
+          speedMultiplier: state.speedMultiplier,
+          speedVals: { ...state.speedVals },
         },
-        "*"
-      );
+      });
     }, 200);
   }
 
   function loadStrokes() {
-    window.postMessage({ source: SOURCE, type: "load", gameId: state.gameId }, "*");
+    postBus({ type: "load", gameId: state.gameId });
   }
 
   function sanitizeStrokes(raw) {
@@ -4835,7 +4834,7 @@
     applyPanelLayout();
     syncNavUi();
     host.classList.add("no-motion");
-    window.postMessage({ source: SOURCE, type: "load-ui" }, "*");
+    postBus({ type: "load-ui" });
     requestAnimationFrame(() => host.classList.remove("no-motion"));
 
     window.addEventListener(
@@ -4906,8 +4905,9 @@
 
   window.addEventListener("message", (event) => {
     if (event.source !== window) return;
+    if (event.origin !== BUS_ORIGIN) return;
     const msg = event.data;
-    if (!msg || msg.source !== SOURCE) return;
+    if (!msg || msg.source !== SOURCE || !BUS_TOKEN || msg.token !== BUS_TOKEN) return;
     if (msg.type === "loaded-ui") {
       const uiState = msg.ui && typeof msg.ui === "object" ? msg.ui : null;
       if (uiState) {
